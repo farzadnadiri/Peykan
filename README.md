@@ -163,28 +163,33 @@ You can then list tools/resources and call one (e.g. monitor `ENGINE_SPEED` for 
 ## 🤖 Using with Ollama (local LLM)
 Ollama runs the model but can't connect to MCP servers on its own, so you need a small client in between. [`ollmcp`](https://github.com/jonigl/mcp-client-for-ollama) is the quickest option.
 
-1. Pull a model that supports **tool calling**, e.g. `ollama pull qwen3` (`llama3.1` and `gemma4` also work). To check a model, run `ollama show <model>` and look for `tools` under *Capabilities*. Models without it (e.g. the original `llama3`) can chat but can't call the CAN tools.
+1. Pull a model that supports **tool calling** and fits in your GPU's memory, e.g. `ollama pull qwen3:8b` (about 5 GB). To check a model, run `ollama show <model>` and look for `tools` under *Capabilities*. Models without it (e.g. the original `llama3`) can chat but can't call the CAN tools.
 2. Terminal A: start the simulator and server:
    ```bash
    mcp-can demo
    ```
-3. Terminal B: connect Ollama to it:
+3. Terminal B: install `ollmcp` in **its own virtual environment** and connect it. It needs the `mcp` 2.x SDK while `mcp-can` currently needs 1.x, so installing both into one Python breaks one of them. They only talk over HTTP, so separate environments work fine.
    ```bash
-   pip install ollmcp
-   ollmcp -u http://localhost:6278/sse -m qwen3
+   python -m venv ollmcp-env
+   ollmcp-env/bin/pip install ollmcp          # Windows: ollmcp-env\Scripts\pip install ollmcp
+   ollmcp-env/bin/ollmcp -u http://localhost:6278/sse -m qwen3:8b
    ```
-   `ollmcp` should list the 12 MCP-CAN tools on startup.
-4. Type questions into the `ollmcp` chat. It's a conversation with the model, not a shell, so don't type commands there.
+   (`pipx install ollmcp` or `uv tool install ollmcp` do the same in one step.) `ollmcp` should list the 12 MCP-CAN tools on startup.
+4. In the `ollmcp` chat, run these once (commands start with `/`):
+   - `/tm` turns thinking mode off. With thinking on, answers take 20–60 s and `ollmcp` sometimes drops the tool call after thinking ("No Response from Model"). With it off, answers take a few seconds.
+   - `/hil` stops the confirmation prompt before every tool call.
+5. Ask questions in plain language. The chat talks to the model; it isn't a shell.
+   - "What's the latest vehicle speed?"
    - "What's the engine speed and coolant temperature right now?"
    - "Read the OBD-II trouble codes."
    - "Activate the overheat fault, then read the J1939 DTCs."
-   - "List the J1939 PGNs you can request."
 
-Tips:
-- `ollmcp` asks before every tool call. Answer `s` to allow tool calls for the rest of the session.
+Troubleshooting:
+- **Stuck on "working..." or very slow:** check where the model runs with `ollama ps` while it answers. On laptops with both integrated and dedicated graphics, Ollama may choose the integrated GPU (it borrows system RAM, so it looks large), which is many times slower. Set `OLLAMA_VULKAN=0` to keep it on an NVIDIA GPU, and `OLLAMA_CONTEXT_LENGTH=8192` so the model fits in the GPU's memory. Then fully restart Ollama (on Windows, *Quit* from the tray icon and relaunch). On Windows: `setx OLLAMA_VULKAN 0` and `setx OLLAMA_CONTEXT_LENGTH 8192`.
+- **Wrong tool or wrong IDs:** small models sometimes pick a roundabout tool. Name it ("use get_vehicle_snapshot"), or clear the context with `/cc`. Tools that take IDs (PGNs, CAN IDs, OBD PIDs, UDS services) accept hex strings like `"0xF004"` and J1939 acronyms like `"EEC1"`, so models don't have to convert hex to decimal (a common source of wrong requests).
 - Watch the same signals live at `http://localhost:6278` while you chat.
-- Small models sometimes pick a roundabout tool. If an answer looks off, name the tool: "use get_vehicle_snapshot". Tools that take IDs (PGNs, CAN IDs, OBD PIDs, UDS services) accept hex strings like `"0xF004"` and J1939 acronyms like `"EEC1"`, so models don't have to convert hex to decimal (a common source of wrong requests).
-- Other MCP hosts work too: [Open WebUI](https://docs.openwebui.com/) can use Ollama models with MCP tools, and VS Code, Cursor, Windsurf and Claude Desktop can connect to `http://localhost:6278/sse` directly, using their own models.
+
+Other MCP hosts work too: [Open WebUI](https://docs.openwebui.com/) can use Ollama models with MCP tools, and VS Code, Cursor, Windsurf and Claude Desktop can connect to `http://localhost:6278/sse` directly, using their own models.
 
 ## ⌨️ CLI Reference
 - `mcp-can simulate` – start ECU simulator using the configured DBC (bundled `vehicle.dbc` by default).

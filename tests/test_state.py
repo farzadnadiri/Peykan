@@ -2,12 +2,17 @@ import random
 
 from mcp_can.config import DEFAULT_DBC_PATH
 from mcp_can.dbc import load_dbc
+from mcp_can.simulator.profiles import DEFAULT_PROFILE
 from mcp_can.simulator.state import (
+    AUTO_LOCK_KPH,
+    CABIN_SETPOINT_C,
     CORRELATED_SIGNALS,
     ENGINE_TEMP_MAX_C,
     IDLE_RPM,
+    WIPER_OFF,
     DrivingState,
     tick,
+    wiper_setting,
 )
 
 
@@ -72,6 +77,20 @@ def test_correlated_signals_produce_dbc_valid_values():
         "WHEEL_SPEED_FR": (0, 300),
         "WHEEL_SPEED_RL": (0, 300),
         "WHEEL_SPEED_RR": (0, 300),
+        "CRASH_DETECTED": (0, 1),
+        "SYSTEM_STATUS": (0, 3),
+        "SEATBELT_DRIVER": (0, 1),
+        "SEATBELT_PASSENGER": (0, 1),
+        "PASSENGER_AIRBAG_DISABLED": (0, 1),
+        "DOOR_OPEN_FL": (0, 1),
+        "DOOR_OPEN_FR": (0, 1),
+        "DOOR_OPEN_RL": (0, 1),
+        "DOOR_OPEN_RR": (0, 1),
+        "VEHICLE_LOCKED": (0, 1),
+        "AMBIENT_LIGHT": (0, 255),
+        "HEADLIGHTS_ON": (0, 1),
+        "WIPER_STATUS": (0, 5),
+        "INTERIOR_TEMP": (-40, 87.5),
     }
     assert set(CORRELATED_SIGNALS) == set(ranges)
     state = DrivingState(throttle_pct=100.0, rpm=16000.0, speed_kph=295.0, fuel_pct=1.0)
@@ -116,3 +135,74 @@ def test_correlated_signals_are_actually_encodable():
                     "WHEEL_SPEED_RR": CORRELATED_SIGNALS["WHEEL_SPEED_RR"](state),
                 }
             )
+
+
+def test_every_broadcast_signal_is_modeled():
+    # Anything left out falls back to SimThread's independent random draws,
+    # which is how a 60 km/h car used to report CRASH_DETECTED and open doors.
+    db = _db()
+    for msg_name, _period in DEFAULT_PROFILE:
+        for sig in db.get_message_by_name(msg_name).signals:
+            assert sig.name in CORRELATED_SIGNALS, f"{msg_name}.{sig.name} is unmodeled"
+
+
+def test_broadcast_messages_encode_from_state():
+    db = _db()
+    random.seed(6)
+    state = DrivingState(passenger_present=True)
+    for _ in range(300):
+        state = tick(state, dt_s=0.2)
+        for msg_name, _period in DEFAULT_PROFILE:
+            msg = db.get_message_by_name(msg_name)
+            msg.encode({sig.name: CORRELATED_SIGNALS[sig.name](state) for sig in msg.signals})
+
+
+def test_normal_drive_reports_no_crash_open_doors_or_faults():
+    random.seed(7)
+    state = DrivingState()
+    for _ in range(3000):  # ten minutes of simulated driving
+        state = tick(state, dt_s=0.2)
+        assert CORRELATED_SIGNALS["CRASH_DETECTED"](state) == 0
+        assert CORRELATED_SIGNALS["SYSTEM_STATUS"](state) == 0
+        assert CORRELATED_SIGNALS["SEATBELT_DRIVER"](state) == 1
+        for door in ("FL", "FR", "RL", "RR"):
+            assert CORRELATED_SIGNALS[f"DOOR_OPEN_{door}"](state) == 0
+        assert 10.0 <= state.interior_temp_c <= 30.0
+        if not state.raining:
+            assert wiper_setting(state) == WIPER_OFF
+
+
+def test_passenger_seatbelt_and_airbag_follow_occupancy():
+    for present in (True, False):
+        state = DrivingState(passenger_present=present)
+        assert CORRELATED_SIGNALS["SEATBELT_PASSENGER"](state) == int(present)
+        assert CORRELATED_SIGNALS["PASSENGER_AIRBAG_DISABLED"](state) == int(not present)
+
+
+def test_doors_auto_lock_once_moving_and_stay_locked():
+    random.seed(8)
+    state = DrivingState(speed_kph=AUTO_LOCK_KPH + 5)
+    state = tick(state, dt_s=0.2)
+    assert state.locked
+    state.speed_kph = 0.0
+    state = tick(state, dt_s=0.2)
+    assert state.locked
+
+
+def test_cabin_settles_toward_climate_setpoint():
+    random.seed(9)
+    state = DrivingState(interior_temp_c=35.0)
+    for _ in range(3000):
+        state = tick(state, dt_s=0.2)
+    assert abs(state.interior_temp_c - CABIN_SETPOINT_C) < 1.0
+
+
+def test_headlights_and_wipers_follow_conditions():
+    dark = DrivingState(ambient_light_lux=20.0)
+    bright = DrivingState(ambient_light_lux=200.0)
+    rainy_fast = DrivingState(ambient_light_lux=200.0, raining=True, speed_kph=110.0)
+    assert CORRELATED_SIGNALS["HEADLIGHTS_ON"](dark) == 1
+    assert CORRELATED_SIGNALS["HEADLIGHTS_ON"](bright) == 0
+    assert CORRELATED_SIGNALS["HEADLIGHTS_ON"](rainy_fast) == 1
+    assert wiper_setting(bright) == WIPER_OFF
+    assert wiper_setting(rainy_fast) > wiper_setting(DrivingState(raining=True, speed_kph=10.0))

@@ -3,7 +3,29 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+
+### Fixed
+- **Simulator no longer reports emergencies during a normal drive.** Body
+  and airbag signals that weren't tied to the driving state were drawn
+  independently at random on every frame, so a car doing 60 km/h reported
+  `CRASH_DETECTED`, open doors, a 61 degC cabin and random
+  `SYSTEM_STATUS` faults (an LLM reading the bus rightly called it an
+  emergency). `simulator/state.py` now models cabin/environment state too:
+  doors closed, driver belted, passenger belt/airbag following occupancy,
+  auto-lock above 15 km/h, cabin temperature settling to a 21.5 degC
+  climate setpoint, ambient light drifting with headlights following it
+  (and rain), wipers following rain and speed. Crashes and faults only come
+  from fault presets. A test guards that every broadcast signal is modeled.
+
+### Added
+- GitHub repository link in the live dashboard's header and footer.
+
+### Docs
+- Ollama section: install `ollmcp` in its own environment (it needs the
+  `mcp` 2.x SDK, `mcp-can` needs 1.x), turn thinking off with `/tm`
+  (slow, and `ollmcp` sometimes drops the tool call after thinking), and
+  keep Ollama on the dedicated GPU (`OLLAMA_VULKAN=0`,
+  `OLLAMA_CONTEXT_LENGTH=8192`).
 
 ## [0.1.3] - 2026-09-28
 

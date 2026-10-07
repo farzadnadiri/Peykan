@@ -4,10 +4,16 @@ Without this, `SimThread`'s per-signal independent random draws mean e.g.
 ENGINE_SPEED and THROTTLE_POSITION have zero relationship tick to tick --
 not much like a moving vehicle. This module holds a few "driver input"-like
 base variables that evolve smoothly over time, plus a table mapping DBC
-signal names to values derived from them. Signals not in that table (doors,
-seatbelts, crash/fault flags, etc.) keep using `SimThread`'s independent
-random draws -- they're discrete/situational, not driving-dynamics signals
-with an obvious relationship to throttle/speed/rpm.
+signal names to values derived from them.
+
+The same goes for the cabin/environment signals (doors, seatbelts, lights,
+wipers, crash/fault flags): drawn independently at random, a car doing
+60 km/h reported CRASH_DETECTED, open doors and a 61 degC cabin every few
+frames, which an LLM reading the bus (rightly) reports as an emergency. They
+now follow slow-changing situational state instead -- a normal, uneventful
+drive -- and abnormal values only appear via fault presets (`faults.py`).
+`SimThread`'s random draws remain only as a fallback for signals a custom
+DBC adds that this table doesn't know.
 
 `tick()` is a pure function (state in, state out) so it's testable without
 any threading or timing; `VehicleState` just calls it from a background
@@ -29,6 +35,15 @@ AMBIENT_TEMP_C = 20.0
 # simulator doesn't silently stop sending ENGINE_STATUS once warmed up.
 OPERATING_TEMP_C = 85.0
 ENGINE_TEMP_MAX_C = 87.5
+CABIN_SETPOINT_C = 21.5  # climate control target
+AUTO_LOCK_KPH = 15.0  # doors lock once the vehicle passes this speed
+HEADLIGHT_LUX = 80.0  # automatic headlights below this ambient light
+
+# WIPER_STATUS choice values (vehicle.dbc VAL_ table).
+WIPER_OFF = 0
+WIPER_INTERMITTENT_2 = 2
+WIPER_LOW_SPEED = 4
+WIPER_HIGH_SPEED = 5
 
 
 @dataclass
@@ -38,6 +53,12 @@ class DrivingState:
     speed_kph: float = 0.0
     engine_temp_c: float = AMBIENT_TEMP_C
     fuel_pct: float = 80.0
+    # Cabin / environment situation: changes slowly or not at all.
+    ambient_light_lux: float = 180.0
+    raining: bool = False
+    interior_temp_c: float = AMBIENT_TEMP_C
+    locked: bool = False
+    passenger_present: bool = False
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -71,13 +92,36 @@ def tick(state: DrivingState, dt_s: float) -> DrivingState:
     ) + random.uniform(-0.3, 0.3)
     fuel = state.fuel_pct - (0.002 + throttle * 0.0002) * dt_s
 
+    light = state.ambient_light_lux + random.uniform(-4, 4) * dt_s
+    if random.random() < 0.01 * dt_s:  # tunnel, overpass, clouds clearing...
+        light = random.uniform(5, 255)
+    raining = state.raining
+    if random.random() < 0.003 * dt_s:  # weather changes every few minutes
+        raining = not raining
+    interior = _approach(
+        state.interior_temp_c, CABIN_SETPOINT_C, time_constant_s=120.0, dt_s=dt_s
+    ) + random.uniform(-0.05, 0.05)
+
     return DrivingState(
         throttle_pct=throttle,
         rpm=_clamp(rpm, 0.0, 16383.0),
         speed_kph=_clamp(speed, 0.0, 300.0),
         engine_temp_c=_clamp(engine_temp, -40.0, ENGINE_TEMP_MAX_C),
         fuel_pct=_clamp(fuel, 0.0, 100.0),
+        ambient_light_lux=_clamp(light, 5.0, 255.0),
+        raining=raining,
+        interior_temp_c=_clamp(interior, -40.0, 87.5),
+        locked=state.locked or speed > AUTO_LOCK_KPH,
+        passenger_present=state.passenger_present,
     )
+
+
+def wiper_setting(state: DrivingState) -> int:
+    if not state.raining:
+        return WIPER_OFF
+    if state.speed_kph < 30:
+        return WIPER_INTERMITTENT_2
+    return WIPER_LOW_SPEED if state.speed_kph < 90 else WIPER_HIGH_SPEED
 
 
 CorrelatedFn = Callable[[DrivingState], float]
@@ -102,6 +146,25 @@ CORRELATED_SIGNALS: Dict[str, CorrelatedFn] = {
     "WHEEL_SPEED_RR": lambda s: round(
         _clamp(s.speed_kph + random.uniform(-1.2, 1.2), 0.0, 300.0), 2
     ),
+    # AIRBAG_STATUS: an uneventful drive. SYSTEM_STATUS faults and crashes
+    # only come from fault presets, which override these.
+    "CRASH_DETECTED": lambda s: 0,
+    "SYSTEM_STATUS": lambda s: 0,  # OK
+    "SEATBELT_DRIVER": lambda s: 1,
+    "SEATBELT_PASSENGER": lambda s: int(s.passenger_present),
+    # Occupant classification switches the passenger airbag off for an
+    # empty seat.
+    "PASSENGER_AIRBAG_DISABLED": lambda s: int(not s.passenger_present),
+    # BODY_STATUS
+    "DOOR_OPEN_FL": lambda s: 0,
+    "DOOR_OPEN_FR": lambda s: 0,
+    "DOOR_OPEN_RL": lambda s: 0,
+    "DOOR_OPEN_RR": lambda s: 0,
+    "VEHICLE_LOCKED": lambda s: int(s.locked),
+    "AMBIENT_LIGHT": lambda s: round(s.ambient_light_lux),
+    "HEADLIGHTS_ON": lambda s: int(s.ambient_light_lux < HEADLIGHT_LUX or s.raining),
+    "WIPER_STATUS": wiper_setting,
+    "INTERIOR_TEMP": lambda s: round(s.interior_temp_c, 1),
 }
 
 
@@ -115,7 +178,7 @@ class VehicleState:
     def __init__(self, tick_s: float = 0.2):
         self._tick_s = tick_s
         self._lock = threading.Lock()
-        self._state = DrivingState()
+        self._state = DrivingState(passenger_present=random.random() < 0.5)
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
