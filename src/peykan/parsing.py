@@ -1,4 +1,4 @@
-from typing import Union
+from typing import List, Union
 
 IntLike = Union[int, str]
 
@@ -25,3 +25,23 @@ def parse_int(value: IntLike) -> int:
         raise ValueError(
             f"{value!r} is not a number; use decimal (61444) or hex ('0xF004')"
         ) from None
+
+
+def parse_data_bytes(data: str) -> List[int]:
+    """Parse a frame payload typed on the command line.
+
+    Space-separated tokens are hex, as candump and most CAN tools print them
+    ("e8 03 a0 32"); comma-separated tokens are decimal ("232,3,160,50").
+    Either form accepts an explicit "0x" prefix. One rule for the whole
+    string, never a per-byte guess: "20 4e" must not mean 20 decimal next
+    to 0x4E.
+    """
+    if "," in data:
+        tokens = [t.strip() for t in data.split(",") if t.strip()]
+        values = [int(t, 16) if t.lower().startswith("0x") else int(t) for t in tokens]
+    else:
+        values = [int(t, 16) for t in data.split() if t]
+    bad = [v for v in values if not 0 <= v <= 0xFF]
+    if bad:
+        raise ValueError(f"byte values must be 0-255, got {bad}")
+    return values

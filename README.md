@@ -1,8 +1,10 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/farzadnadiri/peykan/main/docs/images/peykan-banner.jpg" alt="Peykan: connecting AI agents to vehicle systems (MCP, CAN bus, OBD-II, UDS, J1939)" width="100%">
+</p>
+
 # 🚗 Peykan: Vehicle CAN Bus, OBD-II and J1939 Diagnostics for LLMs (Model Context Protocol)
 
 🔌 Virtual CAN + MCP Server
-
-> **Renamed:** this project was called **mcp-can** until 0.2.0. Install `peykan` instead of `mcp-can`, run `peykan` instead of `mcp-can` (the old command still works for now), and rename `MCP_CAN_*` environment variables to `PEYKAN_*` (the old names are still read, with a warning).
 
 **Peykan** is a [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that exposes automotive **CAN bus**, **OBD-II** (SAE J1979), **UDS**, and **SAE J1939** diagnostic data to LLMs and AI agents. It ships a built-in **virtual CAN bus** with an **ECU simulator**, decodes traffic via a **DBC** database (`cantools`), and serves MCP tools over SSE or streamable-HTTP. No CAN hardware, adapter, or vehicle is required by default; optional SocketCAN/vCAN on Linux.
 
@@ -110,7 +112,7 @@ peykan j1939-dtcs                                            # read the latest D
 ## 📊 Live Dashboard
 With `peykan demo` (or `server`) running, open `http://localhost:6278/dashboard` in a browser: live signal values grouped by ECU message, and a scrolling feed of recent frames, updating ~2x/second over Server-Sent Events. It's read-only (view only, no controls to send frames) and self-contained: no build step, no external assets, works offline. Like everything bus-related here, it only shows data when the simulator shares the *same process* as the server (`peykan demo`); pointed at a bare `peykan server` with no simulator, it just shows "waiting for CAN traffic."
 
-![Peykan live dashboard showing grouped ECU signal values and a recent-frames feed](docs/images/dashboard.png)
+![Peykan live dashboard showing grouped ECU signal values and a recent-frames feed](https://raw.githubusercontent.com/farzadnadiri/peykan/main/docs/images/dashboard.png)
 
 ## 🛠️ Available MCP Tools, Prompts & Resources
 | Name | Type | Description |
@@ -257,7 +259,7 @@ Ollama runs the model but can't connect to MCP servers on its own, so you need a
    pip install ollmcp
    ollmcp -u http://localhost:6278/sse -m qwen3:8b
    ```
-   `ollmcp` should list the 22 Peykan tools on startup. (Before 0.2.0, when this project was still `mcp-can`, it required the `mcp` 1.x SDK, which conflicts with `ollmcp`; from 0.2.0 both use 2.x and can share an environment.)
+   `ollmcp` should list the 22 Peykan tools on startup.
 4. In the `ollmcp` chat, run these once (commands start with `/`):
    - `/tm` turns thinking mode off. With thinking on, answers take 20–60 s and `ollmcp` sometimes drops the tool call after thinking ("No Response from Model"). With it off, answers take a few seconds.
    - `/hil` stops the confirmation prompt before every tool call.
@@ -280,14 +282,14 @@ Other MCP hosts work too: [Open WebUI](https://docs.openwebui.com/) can use Olla
 - `peykan server [--host 127.0.0.1] [--port 6278] [--transport sse|streamable-http|stdio]` – run the MCP server.
 - `peykan demo [--host] [--port] [--transport]` – simulator + server in one process.
 - `peykan frames --seconds 1.0` – capture raw frames as JSON.
-- `peykan decode <id> <data> [--json]` – decode a single frame (table by default; `id` hex/decimal, `data` space/comma-separated bytes).
+- `peykan decode <id> <data> [--json]` – decode a single frame (table by default; `id` hex/decimal; `data` space-separated hex like `e8 03 a0 32`, or comma-separated decimal like `232,3,160,50`).
 - `peykan snapshot --seconds 1.0 [--json]` – latest value of every signal seen while listening.
 - `peykan dbc-info [message]` – table of every message/signal in the DBC, or just one message's.
 - `peykan monitor <signal> --seconds 2.0 [--json]` – watch one signal (live output by default).
 - `peykan obd-request --service <hex|int> [--pid <hex|int>]` – OBD-II request; response includes a decoded value for known PIDs.
 - `peykan diag-request --service-id <hex|int> [--parameter-id] [--data-field]` – UDS-style diagnostic request; prints every ECU's response.
 - `peykan fault <preset|clear|list>` – activate/clear a fault-injection scenario in a running simulator, or list available presets.
-- `peykan j1939-decode <id> <data> [--json]` – decompose a 29-bit J1939 ID and decode known SPNs.
+- `peykan j1939-decode <id> <data> [--json]` – decompose a 29-bit J1939 ID and decode known SPNs (`data` as for `decode`).
 - `peykan j1939-pgns` – list the J1939 PGNs/SPNs this project can decode.
 - `peykan j1939-request <pgn> [--timeout 2.0]` – send a J1939 Request PGN (`0xEA00`) and print decoded responses; `pgn` can be an acronym (`EEC1`), hex (`0xF004`) or decimal.
 - `peykan j1939-dtcs [--seconds 3.0]` – listen for a J1939 DM1 broadcast and print its active trouble codes.
@@ -321,19 +323,15 @@ Env vars (prefix `PEYKAN_`):
 You can also set these in a `.env` file in the working directory.
 
 ## 🐳 Docker
-Build:
+The image runs `peykan demo` (simulator + MCP server in one process) and listens on `0.0.0.0` inside the container.
 ```bash
 docker build -t peykan .
+docker run -d --name peykan -p 6278:6278 peykan
 ```
-Run (combined server + simulator):
-```bash
-docker run -d --name peykan -p 6278:6278 -p 5000:5000 -p 8080:8080 peykan
-```
-Compose (from `docker/`):
+Then use `http://localhost:6278/sse` and `http://localhost:6278/dashboard` as usual. Or with Compose (from `docker/`):
 ```bash
 docker compose up -d --build
 ```
-> The compose file currently runs `server` and `simulator` as separate containers; like running them as two separate local processes, they won't share the virtual CAN bus unless the host provides a real shared `vcan0` interface. For a working combined setup today, use the single-container Dockerfile above (`peykan demo`).
 
 ## 🧪 Development & Testing
 See `CONTRIBUTING.md` for the full guide. Quick version:

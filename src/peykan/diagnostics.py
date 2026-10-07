@@ -23,10 +23,25 @@ SERVICE_IDS: Dict[str, int] = {
     "START_DIAGNOSTIC_SESSION": 0x10,
     "RESET_ECU": 0x11,
     "READ_DATA_BY_ID": 0x22,
-    "WRITE_MEMORY": 0x30,
     "ROUTINE_CONTROL": 0x2F,
     "READ_MEMORY": 0x31,
+    "WRITE_MEMORY": 0x32,
 }
+
+# This protocol's own numbering (see the DBC's VAL_ table) differs from
+# standard UDS -- e.g. 0x31 is READ_MEMORY here but RoutineControl in ISO
+# 14229 -- so the transmit policy can't reuse safety.UDS_WRITE_SERVICES for
+# it. Default-deny instead: only these read; everything else, including
+# unknown IDs, counts as a state-changing service.
+READ_ONLY_SERVICE_IDS = {
+    SERVICE_IDS["START_DIAGNOSTIC_SESSION"],
+    SERVICE_IDS["READ_DATA_BY_ID"],
+    SERVICE_IDS["READ_MEMORY"],
+}
+
+
+def is_write_service(service_id: int) -> bool:
+    return service_id not in READ_ONLY_SERVICE_IDS
 
 RESPONSE_CODES: Dict[int, str] = {
     0: "OK",

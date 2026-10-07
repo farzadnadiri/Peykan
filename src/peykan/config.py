@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -121,19 +122,29 @@ def configure_logging(settings: Optional[Settings] = None) -> None:
         return
     settings = settings or get_settings()
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    # Logs go to stderr: stdout carries command output (JSON that users pipe
+    # into files and tools) and, with the stdio transport, the MCP protocol.
     try:
+        from rich.console import Console
         from rich.logging import RichHandler
 
         logging.basicConfig(
             level=level,
             format="%(message)s",
             datefmt="[%X]",
-            handlers=[RichHandler(rich_tracebacks=True, show_path=False)],
+            handlers=[
+                RichHandler(console=Console(stderr=True), rich_tracebacks=True, show_path=False)
+            ],
         )
     except ImportError:
         logging.basicConfig(
             level=level,
             format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
             datefmt="%H:%M:%S",
+            stream=sys.stderr,
         )
+    # udsoncan/can-isotp log every connection open/close and request at
+    # INFO; keep their warnings and errors, not the chatter.
+    for noisy in ("udsoncan", "isotp", "UdsClient", "Connection"):
+        logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
     _logging_configured = True

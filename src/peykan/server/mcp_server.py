@@ -24,9 +24,12 @@ from ..diagnostics import (
     ecu_name_from_response_message,
     response_code_name,
 )
+from ..diagnostics import (
+    is_write_service as is_diag_write_service,
+)
 from ..obd import build_request, decode_response, parse_response, wait_for_response
 from ..parsing import IntLike, parse_int
-from ..safety import OBD_WRITE_SERVICES, UDS_WRITE_SERVICES, TransmitBlocked, TransmitGuard
+from ..safety import OBD_WRITE_SERVICES, TransmitBlocked, TransmitGuard
 from ..simulator.faults import FAULT_ACK_ID, PRESETS, build_control_frame
 from .live_state import DEFAULT_HISTORY_WINDOW_S, LiveState
 from .prompts import SERVER_INSTRUCTIONS, register_prompts
@@ -269,7 +272,7 @@ def create_app() -> MCPServer:
             bus = guard.wrap(
                 raw_bus,
                 "send_diagnostic_request",
-                write=parse_int(service_id) in UDS_WRITE_SERVICES,
+                write=is_diag_write_service(parse_int(service_id)),
             )
             payload = request_msg.encode(
                 {

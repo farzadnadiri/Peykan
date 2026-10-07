@@ -36,14 +36,15 @@ EXPOSE 6278 80 443 5000 8080
 RUN useradd -ms /bin/bash appuser && chown -R appuser:appuser /home/pi
 USER appuser
 
-# Entrypoint: run MCP and simulation concurrently using virtual backend
+# Simulator + MCP server in ONE process: python-can's virtual bus lives in
+# the Python interpreter, so a separately started `peykan simulate` would
+# be invisible to the server (no traffic on the dashboard or in the tools).
 ENV PEYKAN_CAN_INTERFACE=virtual
 ENV PEYKAN_CAN_CHANNEL=bus0
 # The server listens on loopback by default; inside a container it must
 # accept connections from the host's port mapping.
 ENV PEYKAN_MCP_HOST=0.0.0.0
-CMD ["bash", "-c", "peykan server --port 6278 & peykan simulate && wait"]
+CMD ["peykan", "demo", "--port", "6278"]
 
-# Healthcheck: verify server port is accepting connections
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
-  CMD bash -lc 'python3 - <<PY\nimport socket,sys\ns=socket.socket()\n\ntry:\n s.connect(("127.0.0.1", 6278))\n s.close()\n sys.exit(0)\nexcept Exception:\n sys.exit(1)\nPY'
+# Healthcheck: the server answers /healthz once the DBC has loaded
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5   CMD curl -fs http://127.0.0.1:6278/healthz || exit 1

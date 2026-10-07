@@ -21,9 +21,10 @@ from .diagnostics import (
     ecu_name_from_response_message,
     response_code_name,
 )
+from .diagnostics import is_write_service as is_diag_write_service
 from .obd import build_request, decode_response, parse_response, wait_for_response
-from .parsing import parse_int
-from .safety import OBD_WRITE_SERVICES, UDS_WRITE_SERVICES, TransmitBlocked, TransmitGuard
+from .parsing import parse_data_bytes, parse_int
+from .safety import OBD_WRITE_SERVICES, TransmitBlocked, TransmitGuard
 from .server.mcp_server import main as run_server
 from .simulator.faults import FAULT_ACK_ID, PRESETS, build_control_frame
 from .simulator.runner import run_simulator
@@ -123,25 +124,13 @@ def decode(
     """Decode a CAN frame given an ID and data bytes.
 
     id: CAN ID in hex (e.g. 0x100) or decimal.
-    data: comma-separated bytes (e.g. 01,02,03,04) or space-separated hex (e.g. 01 02 03 04)
+    data: space-separated hex (e.g. e8 03 a0 32) or comma-separated decimal
+    (e.g. 232,3,160,50); "0x" prefixes are accepted in either form.
     """
     settings = get_settings()
     db = load_dbc(settings.dbc_path)
     arb_id = parse_int(id)
-    bytes_list: List[int] = []
-    if "," in data:
-        bytes_list = [
-            int(x.strip(), 16 if x.strip().startswith("0x") else 10)
-            for x in data.split(",")
-            if x.strip()
-        ]
-    else:
-        parts = [p for p in data.replace(",", " ").split(" ") if p]
-        bytes_list = [
-            int(x.strip(), 16 if all(c in "0123456789abcdefABCDEF" for c in x) else 10)
-            for x in parts
-        ]
-    decoded = decode_frame(db, arb_id, bytes(bytes_list))
+    decoded = decode_frame(db, arb_id, bytes(parse_data_bytes(data)))
     if json_output:
         typer.echo(json.dumps(decoded, indent=2))
         return
@@ -324,7 +313,7 @@ def diag_request(
     print every ECU's response as JSON."""
     settings = get_settings()
     db = load_dbc(settings.dbc_path)
-    write = parse_int(service_id) in UDS_WRITE_SERVICES
+    write = is_diag_write_service(parse_int(service_id))
     with _transmit_bus("diag-request", write=write) as bus:
         request_msg = db.get_message_by_name(REQUEST_MESSAGE)
         response_frame_ids = {
@@ -405,23 +394,17 @@ def fault_scenario(
         raise typer.Exit(code=1)
 
 
-def _parse_data_bytes(data: str) -> List[int]:
-    """Parse "01 02 0x03" / "1,2,3" style byte lists (shared by j1939 commands)."""
-    parts = [p for p in data.replace(",", " ").split(" ") if p]
-    return [
-        int(x, 16 if x.lower().startswith("0x") or not x.isdigit() else 10) for x in parts
-    ]
-
-
 @app.command("j1939-decode")
 def j1939_decode(
     id: str = typer.Argument(..., help="29-bit extended CAN ID (hex like 0x18F00400)"),
-    data: str = typer.Argument(..., help="Payload bytes, space- or comma-separated"),
+    data: str = typer.Argument(
+        ..., help="Payload: space-separated hex (00 20 4e) or comma-separated decimal (0,32,78)"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print raw JSON instead of a table"),
 ) -> None:
     """Decompose a J1939 29-bit ID (priority / PGN / addresses) and decode known SPNs."""
     arb_id = parse_int(id)
-    payload = bytes(_parse_data_bytes(data))
+    payload = bytes(parse_data_bytes(data))
     parsed = j1939.parse_can_id(arb_id)
     definition = j1939.PGN_CATALOG.get(parsed.pgn)
     signals = j1939.decode_pgn(parsed.pgn, payload)

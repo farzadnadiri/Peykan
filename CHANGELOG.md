@@ -6,6 +6,31 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- The Docker image ran `peykan server` and `peykan simulate` as two
+  processes, which can't share python-can's virtual bus, so the
+  container's tools and dashboard saw no traffic. It now runs
+  `peykan demo`; the compose file is a single service doing the same; both
+  health checks call `/healthz` with curl (the old inline-Python check was
+  malformed).
+- The transmit policy classified `send_diagnostic_request` /
+  `diag-request` by standard UDS service numbers, but the DBC's diagnostic
+  protocol numbers its services differently: its `WRITE_MEMORY` (0x32)
+  passed as a read on real hardware with only `PEYKAN_ALLOW_TRANSMIT`, and
+  `READ_MEMORY` (0x31, RoutineControl in UDS) was refused as a write. It
+  now uses the protocol's own read-only list (session start, read data,
+  read memory) and treats everything else, including unknown IDs, as a
+  write. `diagnostics.SERVICE_IDS` also had `WRITE_MEMORY` as 0x30; it's
+  0x32 per the DBC, and a test now ties the two together.
+- Log output went to stdout, so CLI commands that print JSON (e.g.
+  `peykan uds-dtcs > dtcs.json`) got udsoncan's log lines mixed into it.
+  All logging now goes to stderr, and udsoncan/can-isotp's per-request INFO
+  messages are quieted (their warnings and errors still show).
+- `peykan j1939-decode` guessed each payload byte's base separately, so
+  "00 20 4e" read `20` as decimal next to hex `4e` and decoded 2500 rpm as
+  2498.5. `decode` and `j1939-decode` now share one rule
+  (`parsing.parse_data_bytes`): space-separated bytes are hex, as in
+  candump; comma-separated bytes are decimal; `0x` prefixes work in both;
+  values outside 0-255 are rejected instead of failing obscurely.
 - `requirements.txt` pinned `rpds-py==2026.9.1`, which needs Python 3.11+,
   so CI on Python 3.10 (and the Ubuntu 22.04 Docker image) couldn't
   install it. Pinned to 0.30.0, the newest release supporting 3.10, with
@@ -13,6 +38,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unaffected: it doesn't pin rpds-py.
 
 ### Changed
+- README: banner at the top, a new dashboard screenshot under the Peykan
+  name, and absolute image URLs so images also render on the PyPI project
+  page. Removed an unused, outdated Windsurf screenshot.
 - CI/release workflows use `actions/checkout@v7` and `actions/setup-python@v7`
   (Node.js 24; v4/v5 ran on the deprecated Node.js 20).
 

@@ -3,6 +3,8 @@ title: "Peykan: Vehicle CAN Bus, OBD-II and J1939 Diagnostics for LLMs"
 description: "An MCP (Model Context Protocol) server that exposes automotive CAN bus, OBD-II, UDS and SAE J1939 diagnostic data to LLMs and AI agents, with a built-in virtual CAN simulator. No hardware required."
 ---
 
+![Peykan: connecting AI agents to vehicle systems](images/peykan-banner.jpg)
+
 # Peykan
 
 **Peykan** is a [Model Context Protocol](https://modelcontextprotocol.io) (MCP)

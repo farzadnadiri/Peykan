@@ -1,30 +1,23 @@
 services:
-  server:
+  # One service on purpose: the simulator and MCP server must share a process
+  # to share python-can's virtual bus (separate containers can't). For real
+  # hardware, set PEYKAN_CAN_INTERFACE/PEYKAN_CAN_CHANNEL and run
+  # `peykan server` instead -- see the "Real hardware & transmit safety"
+  # section of the README.
+  peykan:
     build: ..
-    container_name: peykan-server
+    container_name: peykan
     environment:
       - PEYKAN_CAN_INTERFACE=virtual
       - PEYKAN_CAN_CHANNEL=bus0
       - PEYKAN_MCP_HOST=0.0.0.0
       - PEYKAN_MCP_PORT=6278
-    working_dir: /home/pi/peykan
-    command: bash -lc "peykan server --port 6278"
+    command: ["peykan", "demo", "--port", "6278"]
     ports:
       - "6278:6278"
     healthcheck:
-      test: ["CMD", "bash", "-lc", "python3 - <<PY\nimport socket,sys\ns=socket.socket()\n\ntry:\n s.connect((\"127.0.0.1\", 6278))\n s.close()\n sys.exit(0)\nexcept Exception:\n sys.exit(1)\nPY"]
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:6278/healthz"]
       interval: 30s
       timeout: 5s
       start_period: 20s
       retries: 5
-
-  simulator:
-    build: ..
-    container_name: peykan-sim
-    environment:
-      - PEYKAN_CAN_INTERFACE=virtual
-      - PEYKAN_CAN_CHANNEL=bus0
-      - PEYKAN_MCP_HOST=0.0.0.0
-    working_dir: /home/pi/peykan
-    command: bash -lc "peykan simulate"
-

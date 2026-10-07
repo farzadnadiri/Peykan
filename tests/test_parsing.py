@@ -40,3 +40,17 @@ def test_parse_int_rejects_garbage_with_a_helpful_message():
 )
 def test_resolve_pgn_accepts_acronyms_hex_and_ints(value, expected):
     assert j1939.resolve_pgn(value) == expected
+
+
+def test_data_bytes_use_one_rule_per_string():
+    from peykan.parsing import parse_data_bytes
+
+    # Space-separated is hex, like candump -- including all-digit bytes.
+    assert parse_data_bytes("00 00 00 20 4e") == [0, 0, 0, 0x20, 0x4E]
+    assert parse_data_bytes("e8 03 a0 32") == [0xE8, 0x03, 0xA0, 0x32]
+    # Comma-separated is decimal unless prefixed.
+    assert parse_data_bytes("232,3,160,0x32") == [232, 3, 160, 0x32]
+    with pytest.raises(ValueError, match="0-255"):
+        parse_data_bytes("1ff")
+    with pytest.raises(ValueError, match="0-255"):
+        parse_data_bytes("1,256")

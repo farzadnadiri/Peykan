@@ -90,3 +90,13 @@ def test_j1939_request_accepts_acronym(monkeypatch):
     assert json.loads(result.stdout)["responses"][0]["signals"][
         "ENGINE_COOLANT_TEMPERATURE"
     ] == 90.0
+
+
+def test_j1939_decode_reads_all_digit_bytes_as_hex():
+    # Regression: "20" used to be read as decimal 20 next to hex "4e",
+    # turning 2500 rpm into 2498.5.
+    result = runner.invoke(
+        cli_module.app, ["j1939-decode", "0x0CF00400", "00 00 00 20 4e 00 00 00", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["signals"]["ENGINE_SPEED"] == 2500.0
