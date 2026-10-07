@@ -5,6 +5,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-07
+
 ### Fixed
 - The Docker image ran `peykan server` and `peykan simulate` as two
   processes, which can't share python-can's virtual bus, so the
