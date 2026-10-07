@@ -1,7 +1,7 @@
 import cantools
 
-from mcp_can.config import DEFAULT_DBC_PATH
-from mcp_can.dbc import decode_frame
+from peykan.config import DEFAULT_DBC_PATH
+from peykan.dbc import decode_frame
 
 
 def test_encode_decode_roundtrip_engine_status():
@@ -13,6 +13,7 @@ def test_encode_decode_roundtrip_engine_status():
         "THROTTLE_POSITION": 20,
         "ENGINE_LOAD": 30,
         "FUEL_LEVEL": 50,
+        "BATTERY_VOLTAGE": 14.1,
     }
     data = msg.encode(signals)
     decoded = decode_frame(db, msg.frame_id, data)

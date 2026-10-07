@@ -3,8 +3,8 @@ import time
 
 from typer.testing import CliRunner
 
-from mcp_can import cli as cli_module
-from mcp_can import j1939
+from peykan import cli as cli_module
+from peykan import j1939
 
 runner = CliRunner()
 

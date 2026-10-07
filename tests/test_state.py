@@ -1,9 +1,9 @@
 import random
 
-from mcp_can.config import DEFAULT_DBC_PATH
-from mcp_can.dbc import load_dbc
-from mcp_can.simulator.profiles import DEFAULT_PROFILE
-from mcp_can.simulator.state import (
+from peykan.config import DEFAULT_DBC_PATH
+from peykan.dbc import load_dbc
+from peykan.simulator.profiles import DEFAULT_PROFILE
+from peykan.simulator.state import (
     AUTO_LOCK_KPH,
     CABIN_SETPOINT_C,
     CORRELATED_SIGNALS,
@@ -56,7 +56,7 @@ def test_rpm_and_speed_rise_toward_target_under_sustained_throttle():
 def test_engine_warms_up_toward_operating_temperature():
     random.seed(3)
     state = DrivingState(engine_temp_c=20.0)
-    for _ in range(500):
+    for _ in range(1000):  # 200 s: ~96% of the way to operating temperature
         state = tick(state, dt_s=0.2)
     assert state.engine_temp_c > 70.0
 
@@ -73,6 +73,7 @@ def test_correlated_signals_produce_dbc_valid_values():
         "THROTTLE_POSITION": (0, 100),
         "ENGINE_LOAD": (0, 100),
         "FUEL_LEVEL": (0, 100),
+        "BATTERY_VOLTAGE": (0, 25.5),
         "WHEEL_SPEED_FL": (0, 300),
         "WHEEL_SPEED_FR": (0, 300),
         "WHEEL_SPEED_RL": (0, 300),
@@ -125,6 +126,7 @@ def test_correlated_signals_are_actually_encodable():
                     "THROTTLE_POSITION": CORRELATED_SIGNALS["THROTTLE_POSITION"](state),
                     "ENGINE_LOAD": CORRELATED_SIGNALS["ENGINE_LOAD"](state),
                     "FUEL_LEVEL": CORRELATED_SIGNALS["FUEL_LEVEL"](state),
+                    "BATTERY_VOLTAGE": CORRELATED_SIGNALS["BATTERY_VOLTAGE"](state),
                 }
             )
             abs_msg.encode(

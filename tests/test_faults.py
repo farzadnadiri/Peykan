@@ -1,6 +1,6 @@
-from mcp_can.config import DEFAULT_DBC_PATH
-from mcp_can.dbc import load_dbc
-from mcp_can.simulator.faults import (
+from peykan.config import DEFAULT_DBC_PATH
+from peykan.dbc import load_dbc
+from peykan.simulator.faults import (
     PRESETS,
     FaultState,
     build_control_frame,

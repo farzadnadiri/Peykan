@@ -1,18 +1,23 @@
 import time
-from typing import List
+from typing import Any, Dict, List
 
 import can
 
+from .config import get_settings
 from .models import Frame
 
 
 def make_bus(interface: str, channel: str) -> can.BusABC:
+    kwargs: Dict[str, Any] = {}
+    bitrate = get_settings().can_bitrate
+    if bitrate:
+        kwargs["bitrate"] = bitrate
     # ThreadSafeBus provides thread-safe send; for reading, regular interface is fine
     try:
-        return can.ThreadSafeBus(interface=interface, channel=channel)
+        return can.ThreadSafeBus(interface=interface, channel=channel, **kwargs)
     except Exception:
         # Fallback to standard Bus if ThreadSafeBus not available or fails
-        return can.interface.Bus(interface=interface, channel=channel)
+        return can.interface.Bus(interface=interface, channel=channel, **kwargs)
 
 
 def read_frames(bus: can.BusABC, duration_s: float = 1.0) -> List[Frame]:

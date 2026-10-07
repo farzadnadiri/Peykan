@@ -16,6 +16,7 @@ from .faults import FaultListenerThread, FaultState
 from .j1939_runner import start_j1939_threads
 from .profiles import DEFAULT_PROFILE
 from .state import CORRELATED_SIGNALS, VehicleState
+from .uds_ecu import UdsEcu, UdsEcuThread
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,8 @@ class SimThread(threading.Thread):
                 # Snapshot once per message, not once per signal, so every
                 # correlated signal in this frame reflects the same instant.
                 driving_state = self.vehicle_state.snapshot() if self.vehicle_state else None
+                if driving_state is not None and self.fault_state is not None:
+                    driving_state = self.fault_state.apply(driving_state)
                 signals = {
                     sig.name: self._signal_value(sig, driving_state) for sig in self.msg.signals
                 }
@@ -97,10 +100,16 @@ class SimThread(threading.Thread):
 
 
 class OBDResponderThread(threading.Thread):
-    def __init__(self, bus: can.BusABC, fault_state: Optional[FaultState] = None):
+    def __init__(
+        self,
+        bus: can.BusABC,
+        fault_state: Optional[FaultState] = None,
+        vehicle_state: Optional[VehicleState] = None,
+    ):
         super().__init__(daemon=True)
         self.bus = bus
         self.fault_state = fault_state
+        self.vehicle_state = vehicle_state
 
     def run(self) -> None:
         while True:
@@ -108,7 +117,10 @@ class OBDResponderThread(threading.Thread):
             if msg and msg.arbitration_id == OBD_BROADCAST_ID and len(msg.data) > 0:
                 service, pid = parse_request(msg.data)
                 dtcs = self.fault_state.dtcs() if self.fault_state else None
-                payload = simulate_response(service, pid, dtcs=dtcs)
+                state = self.vehicle_state.snapshot() if self.vehicle_state else None
+                if state is not None and self.fault_state is not None:
+                    state = self.fault_state.apply(state)
+                payload = simulate_response(service, pid, dtcs=dtcs, state=state)
                 if payload is not None:
                     try:
                         arb_id, data = build_response_frame(payload)
@@ -168,9 +180,20 @@ class DiagnosticResponderThread(threading.Thread):
                     logger.exception("Diagnostic responder error")
 
 
+class SimulatorRefused(RuntimeError):
+    pass
+
+
 def run_simulator(profile: List[Tuple[str, float]] = DEFAULT_PROFILE) -> None:
     configure_logging()
     settings = get_settings()
+    if not settings.is_virtual and not settings.simulator_on_hardware:
+        raise SimulatorRefused(
+            f"Refusing to run the ECU simulator on interface {settings.can_interface!r}: "
+            "it broadcasts fake ECU traffic, which would corrupt a real vehicle network. "
+            "Use the virtual interface, or set PEYKAN_SIMULATOR_ON_HARDWARE=true for an "
+            "isolated bench setup."
+        )
     db = load_dbc(settings.dbc_path)
     bus = make_bus(settings.can_interface, settings.can_channel)
     vehicle_state = VehicleState()
@@ -188,7 +211,9 @@ def run_simulator(profile: List[Tuple[str, float]] = DEFAULT_PROFILE) -> None:
     # instance would silently steal frames from each other rather than each
     # seeing every frame.
     obd_t = OBDResponderThread(
-        make_bus(settings.can_interface, settings.can_channel), fault_state=fault_state
+        make_bus(settings.can_interface, settings.can_channel),
+        fault_state=fault_state,
+        vehicle_state=vehicle_state,
     )
     obd_t.start()
     diag_t = DiagnosticResponderThread(
@@ -199,6 +224,12 @@ def run_simulator(profile: List[Tuple[str, float]] = DEFAULT_PROFILE) -> None:
         fault_state, make_bus(settings.can_interface, settings.can_channel)
     )
     fault_t.start()
+    uds_t = UdsEcuThread(
+        make_bus(settings.can_interface, settings.can_channel),
+        make_bus(settings.can_interface, settings.can_channel),
+        UdsEcu(vehicle_state, fault_state),
+    )
+    uds_t.start()
     j1939_threads: List[threading.Thread] = []
     if settings.j1939_enabled:
         j1939_threads = start_j1939_threads(
@@ -209,7 +240,7 @@ def run_simulator(profile: List[Tuple[str, float]] = DEFAULT_PROFILE) -> None:
             fault_state,
         )
     logger.info(
-        "ECU simulation running (%d profile threads + OBD + diagnostics + faults%s). "
+        "ECU simulation running (%d profile threads + OBD + UDS/ISO-TP + diagnostics + faults%s). "
         "Press Ctrl-C to exit.",
         len(threads),
         " + J1939" if j1939_threads else "",

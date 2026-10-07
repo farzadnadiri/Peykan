@@ -1,5 +1,5 @@
-from mcp_can.config import DEFAULT_DBC_PATH
-from mcp_can.dbc import decode_frame, load_dbc, signal_int
+from peykan.config import DEFAULT_DBC_PATH
+from peykan.dbc import decode_frame, load_dbc, signal_int
 
 
 def _db():

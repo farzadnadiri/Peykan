@@ -1,13 +1,14 @@
 services:
   server:
     build: ..
-    container_name: mcp-can-server
+    container_name: peykan-server
     environment:
-      - MCP_CAN_CAN_INTERFACE=virtual
-      - MCP_CAN_CAN_CHANNEL=bus0
-      - MCP_CAN_MCP_PORT=6278
-    working_dir: /home/pi/MCP-Demo
-    command: bash -lc "mcp-can server --port 6278"
+      - PEYKAN_CAN_INTERFACE=virtual
+      - PEYKAN_CAN_CHANNEL=bus0
+      - PEYKAN_MCP_HOST=0.0.0.0
+      - PEYKAN_MCP_PORT=6278
+    working_dir: /home/pi/peykan
+    command: bash -lc "peykan server --port 6278"
     ports:
       - "6278:6278"
     healthcheck:
@@ -19,10 +20,11 @@ services:
 
   simulator:
     build: ..
-    container_name: mcp-can-sim
+    container_name: peykan-sim
     environment:
-      - MCP_CAN_CAN_INTERFACE=virtual
-      - MCP_CAN_CAN_CHANNEL=bus0
-    working_dir: /home/pi/MCP-Demo
-    command: bash -lc "mcp-can simulate"
+      - PEYKAN_CAN_INTERFACE=virtual
+      - PEYKAN_CAN_CHANNEL=bus0
+      - PEYKAN_MCP_HOST=0.0.0.0
+    working_dir: /home/pi/peykan
+    command: bash -lc "peykan simulate"
 

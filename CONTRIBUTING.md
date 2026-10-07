@@ -1,8 +1,8 @@
-# Contributing to MCP-CAN
+# Contributing to Peykan
 
 Thanks for taking a look. This project is intentionally small and educational —
 keep contributions in that spirit: prefer clarity over cleverness, and reuse
-the existing patterns (see `src/mcp_can/`'s layout) rather than introducing
+the existing patterns (see `src/peykan/`'s layout) rather than introducing
 new ones for a one-off feature.
 
 ## Local setup
@@ -38,7 +38,7 @@ For a live sanity check beyond the test suite, run the actual server and
 call a tool through a real MCP client:
 
 ```bash
-mcp-can demo --port 6278
+peykan demo --port 6278
 ```
 
 then, in another shell, use the MCP Inspector (`npx @modelcontextprotocol/inspector`,
@@ -50,13 +50,17 @@ only thing that catches wiring/transport-level regressions.
 
 ## Code layout
 
-- `src/mcp_can/bus.py`, `dbc.py`, `obd.py`, `diagnostics.py`, `j1939.py` —
-  protocol/bus logic, no MCP or CLI awareness. New protocol behavior belongs
+- `src/peykan/bus.py`, `dbc.py`, `obd.py`, `diagnostics.py`, `j1939.py`,
+  `uds.py`, `logs.py` — protocol/bus logic, no MCP or CLI awareness. New protocol behavior belongs
   here, not in `server/` or `cli.py`. `j1939.py` is deliberately *not*
   DBC-driven (J1939 rides 29-bit extended IDs whose arbitration field is
   structured data); its simulator side lives in
   `simulator/j1939_runner.py`.
-- `src/mcp_can/server/fastmcp_server.py` — MCP tool/resource definitions;
+- `src/peykan/safety.py` — the transmit policy. Anything that sends on the
+  bus must go through `TransmitGuard.wrap(bus, purpose, write=...)`, with
+  `write=True` for anything that changes ECU or bus state; never call a raw
+  bus's `send` from a tool or CLI command.
+- `src/peykan/server/mcp_server.py` — MCP tool/resource definitions;
   `server/schemas.py` — the Pydantic models those tools return;
   `server/live_state.py` — the single background listener backing both the
   passive-listening tools (`read_can_frames`/`filter_frames`/`monitor_signal`)
@@ -67,17 +71,17 @@ only thing that catches wiring/transport-level regressions.
   (`send_obd_request`, `send_diagnostic_request`) are the exception: they
   genuinely need to send something and wait for a specific reply, so they
   still open their own short-lived `make_bus()` instance.
-- `src/mcp_can/simulator/runner.py` — the ECU simulator threads
+- `src/peykan/simulator/runner.py` — the ECU simulator threads
   (`SimThread`, `OBDResponderThread`, `DiagnosticResponderThread`), plus
   `j1939_runner.py`'s J1939 broadcasters/responders started from
-  `run_simulator()` when `MCP_CAN_J1939_ENABLED`. Each
+  `run_simulator()` when `PEYKAN_J1939_ENABLED`. Each
   bus *listener* thread needs its **own** `make_bus(...)` instance — a
   single `python-can` `Bus` instance's `recv()` queue is consumed once per
   message, so two threads sharing one instance will silently steal frames
   from each other instead of each seeing every frame. (This was a real bug
   caught while adding the diagnostic responder — see `run_simulator()`'s
   comment.)
-- `src/mcp_can/cli.py` — the `mcp-can` Typer CLI; mirrors the MCP tool
+- `src/peykan/cli.py` — the `peykan` Typer CLI; mirrors the MCP tool
   surface where practical so both interfaces stay in sync.
 
 ## Adding a new MCP tool
@@ -85,7 +89,7 @@ only thing that catches wiring/transport-level regressions.
 1. Add the protocol logic (encode/decode/whatever) to a plain module first —
    testable without any bus or MCP machinery.
 2. Add a Pydantic return model to `server/schemas.py`.
-3. Register the tool in `server/fastmcp_server.py::create_app()`. If it's
+3. Register the tool in `server/mcp_server.py::create_app()`. If it's
    passively watching traffic, read from `live_state.frames_since(...)`
    (see `read_can_frames` for the pattern) rather than opening a bus
    connection. If it sends something and waits for a specific reply, open
@@ -116,4 +120,4 @@ git push origin v0.1.0
 
 Open a GitHub issue. Include your OS, Python version, and — if it's a CAN/MCP
 issue — whether you're using the virtual backend or real hardware
-(`MCP_CAN_CAN_INTERFACE`).
+(`PEYKAN_CAN_INTERFACE`).

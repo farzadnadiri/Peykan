@@ -1,7 +1,7 @@
 import pytest
 
-from mcp_can import j1939
-from mcp_can.parsing import parse_int
+from peykan import j1939
+from peykan.parsing import parse_int
 
 
 @pytest.mark.parametrize(

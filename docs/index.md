@@ -1,11 +1,11 @@
 ---
-title: "MCP-CAN: Vehicle CAN Bus, OBD-II and J1939 Diagnostics for LLMs"
+title: "Peykan: Vehicle CAN Bus, OBD-II and J1939 Diagnostics for LLMs"
 description: "An MCP (Model Context Protocol) server that exposes automotive CAN bus, OBD-II, UDS and SAE J1939 diagnostic data to LLMs and AI agents, with a built-in virtual CAN simulator. No hardware required."
 ---
 
-# MCP-CAN
+# Peykan
 
-**MCP-CAN** is a [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
+**Peykan** is a [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
 server that exposes automotive **CAN bus**, **OBD-II** (SAE J1979), **UDS**, and
 **SAE J1939** diagnostic data to LLMs and AI agents.
 
@@ -14,7 +14,7 @@ a **DBC** database using `cantools`, and serves MCP tools over SSE or
 streamable-HTTP. No CAN hardware, OBD adapter, or physical vehicle is required by
 default. Optional SocketCAN / vCAN on Linux.
 
-- **Source code and full docs:** [github.com/farzadnadiri/MCP-CAN](https://github.com/farzadnadiri/MCP-CAN)
+- **Source code and full docs:** [github.com/farzadnadiri/peykan](https://github.com/farzadnadiri/peykan)
 - **License:** MIT (educational and prototyping use)
 
 ## What it does
@@ -25,8 +25,12 @@ default. Optional SocketCAN / vCAN on Linux.
 - Decodes **SAE J1939** 29-bit extended IDs: priority, PGN, source and destination
   address, a curated PGN/SPN catalog (EEC1, EEC2, ET1, CCVS1, LFE1, DD1), Request
   PGN round trips, and **DM1** active diagnostic trouble codes (SPN/FMI).
-- Injects named **fault scenarios** (`overheat`, `abs_fault`, `low_fuel`) with
-  matching DTCs.
+- Injects named **fault scenarios** (`overheat`, `abs_fault`, `low_fuel`,
+  `crash`, `door_ajar`, `misfire`, `battery_low`) with matching DTCs.
+- Speaks real **UDS over ISO-TP** (VIN, data identifiers, DTCs with status)
+  and J1939 multi-packet transport.
+- Analyses and replays **recorded CAN logs** (.asc, .blf, .trc, candump .log).
+- Works on **real hardware** behind a read-only-by-default transmit policy.
 - Serves a read-only live **web dashboard** of signal values and recent frames.
 
 ## MCP tools
@@ -34,18 +38,22 @@ default. Optional SocketCAN / vCAN on Linux.
 `read_can_frames`, `decode_can_frame`, `filter_frames`, `monitor_signal`,
 `get_vehicle_snapshot`, `send_obd_request`, `send_diagnostic_request`,
 `activate_fault_scenario`, `decode_j1939_frame`, `list_j1939_pgns`,
-`request_j1939_pgn`, `read_j1939_dtcs`, plus the `vehicle.dbc` resource.
+`request_j1939_pgn`, `read_j1939_dtcs`, `read_vin`, `uds_read_data`,
+`uds_read_dtcs`, `uds_clear_dtcs`, `get_transmit_log`, `list_can_logs`,
+`analyze_can_log`, `get_log_signal`, `replay_can_log`, `stop_log_replay`, plus
+the `vehicle.dbc` resource and built-in prompts (`diagnose_vehicle`,
+`explain_dtc`, `trip_summary`, `fault_drill`, `analyze_log`).
 
 ## Quickstart
 
 ```bash
-pip install mcp-can
+pip install peykan
 
-mcp-can demo --port 6278          # simulator + MCP server in one process
+peykan demo --port 6278          # simulator + MCP server in one process
 # then point your MCP host at http://localhost:6278/sse
 ```
 
-See the [README](https://github.com/farzadnadiri/MCP-CAN#readme) for the full CLI
+See the [README](https://github.com/farzadnadiri/peykan#readme) for the full CLI
 reference, configuration, Docker setup, and Ollama integration.
 
 ## Topics

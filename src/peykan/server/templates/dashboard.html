@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MCP-CAN Live Dashboard</title>
+<title>Peykan Live Dashboard</title>
 <style>
   :root {
     --bg: #0b0d12;
@@ -183,14 +183,14 @@
 </head>
 <body>
 <header>
-  <h1><span class="dot" id="live-dot"></span> MCP-CAN Live Dashboard</h1>
+  <h1><span class="dot" id="live-dot"></span> Peykan Live Dashboard</h1>
   <div class="header-right">
     <div class="stats">
       <span>frames: <b id="stat-frames">0</b></span>
       <span>signals: <b id="stat-signals">0</b></span>
       <span>uptime: <b id="stat-uptime">0s</b></span>
     </div>
-    <a class="repo-link" href="https://github.com/farzadnadiri/MCP-CAN" target="_blank" rel="noopener noreferrer" aria-label="MCP-CAN on GitHub">
+    <a class="repo-link" href="https://github.com/farzadnadiri/peykan" target="_blank" rel="noopener noreferrer" aria-label="Peykan on GitHub">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       GitHub
     </a>
@@ -204,7 +204,7 @@
         Waiting for CAN traffic&hellip;<br><br>
         This page only shows data while the simulator and server share a
         virtual bus in the <strong>same process</strong> &mdash; start it with
-        <code>mcp-can demo</code>, not <code>mcp-can server</code> alone.
+        <code>peykan demo</code>, not <code>peykan server</code> alone.
       </div>
     </div>
   </section>
@@ -213,7 +213,7 @@
     <ul id="activity-list"></ul>
   </section>
 </main>
-<footer><a href="https://github.com/farzadnadiri/MCP-CAN" target="_blank" rel="noopener noreferrer">MCP-CAN on GitHub</a> &middot; read-only view, updates every ~0.5s over SSE</footer>
+<footer><a href="https://github.com/farzadnadiri/peykan" target="_blank" rel="noopener noreferrer">Peykan on GitHub</a> &middot; read-only view, updates every ~0.5s over SSE</footer>
 <script>
 (function () {
   var liveDot = document.getElementById("live-dot");

@@ -1,13 +1,14 @@
-from mcp_can import j1939
-from mcp_can.simulator.faults import PRESETS, FaultState
-from mcp_can.simulator.j1939_runner import (
+from peykan import j1939
+from peykan.simulator.faults import PRESETS, FaultState
+from peykan.simulator.j1939_runner import (
     BROADCAST_SCHEDULE,
     J1939_FAULT_DTCS,
+    PRESETS_WITHOUT_J1939_DTCS,
     _encode_frame,
     active_dm1_dtcs,
     signals_for_pgn,
 )
-from mcp_can.simulator.state import DrivingState
+from peykan.simulator.state import DrivingState
 
 
 def test_signals_for_pgn_map_driving_state_onto_every_broadcast_pgn():
@@ -37,8 +38,10 @@ def test_active_dm1_dtcs_follow_fault_state():
 
 
 def test_every_fault_preset_has_a_j1939_dtc_mapping():
-    # Keeps J1939_FAULT_DTCS in sync with faults.PRESETS.
-    assert set(J1939_FAULT_DTCS) == set(PRESETS)
+    # Keeps J1939_FAULT_DTCS in sync with faults.PRESETS: every preset is
+    # either mapped or explicitly listed as having no J1939 DTC.
+    assert set(J1939_FAULT_DTCS) | PRESETS_WITHOUT_J1939_DTCS == set(PRESETS)
+    assert not set(J1939_FAULT_DTCS) & PRESETS_WITHOUT_J1939_DTCS
     for dtcs in J1939_FAULT_DTCS.values():
         for dtc in dtcs:
             assert j1939.decode_dtc(j1939.encode_dtc(dtc)) == dtc

@@ -4,13 +4,15 @@ Runs alongside the light-vehicle `SimThread`/`OBDResponderThread` stack (see
 `runner.py`), sharing the same virtual bus but using 29-bit extended IDs so
 the two protocols never collide. Three pieces:
 
-* `J1939Broadcaster` — periodically encodes EEC1/EEC2/ET1/CCVS1/LFE1/DD1 from
-  the shared `VehicleState`, so J1939 engine speed / road speed / coolant
-  temperature track the same driving dynamics the 11-bit signals do.
+* `J1939Broadcaster` — periodically encodes EEC1/EEC2/ET1/CCVS1/LFE1/DD1/VEP1
+  from the shared `VehicleState` (with the active fault's state effect), so
+  J1939 engine speed / road speed / coolant temperature / battery voltage
+  track the same driving dynamics the 11-bit signals do.
 * `J1939RequestResponder` — answers Request PGN (0xEA00) frames by
   re-broadcasting the requested PGN once.
 * `J1939Dm1Broadcaster` — emits DM1 (active DTCs) at 1 Hz, reflecting the
-  active fault-injection preset via `J1939_FAULT_DTCS`.
+  active fault-injection preset via `J1939_FAULT_DTCS`. A DM1 with more than
+  one DTC exceeds 8 bytes and goes out via the BAM transport protocol.
 
 Like every listener thread here, each gets its **own** `make_bus(...)`
 instance — see `runner.py::run_simulator`'s comment on frame theft.
@@ -26,7 +28,7 @@ import can
 
 from .. import j1939
 from .faults import FaultState
-from .state import VehicleState
+from .state import DrivingState, VehicleState
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,15 @@ J1939_FAULT_DTCS: Dict[str, List[j1939.J1939Dtc]] = {
     "overheat": [j1939.J1939Dtc(spn=110, fmi=0)],  # coolant temp high, most severe
     "abs_fault": [j1939.J1939Dtc(spn=84, fmi=5)],  # wheel speed sensor open circuit
     "low_fuel": [j1939.J1939Dtc(spn=96, fmi=18)],  # fuel level low, moderately severe
+    "misfire": [
+        j1939.J1939Dtc(spn=1322, fmi=31),  # misfire, multiple cylinders: condition exists
+        j1939.J1939Dtc(spn=651, fmi=7),  # cylinder 1 injector: mechanical not responding
+    ],
+    "battery_low": [j1939.J1939Dtc(spn=168, fmi=18)],  # battery potential low
 }
+# Airbag and body faults aren't reported over J1939 (their DTCs show up via
+# OBD-II/UDS only); listed so a newly added preset can't be silently missed.
+PRESETS_WITHOUT_J1939_DTCS = {"crash", "door_ajar"}
 
 
 def _fuel_rate_lph(throttle_pct: float) -> float:
@@ -71,6 +81,8 @@ def signals_for_pgn(pgn: int, state) -> Dict[str, float]:
         }
     if pgn == j1939.PGN_DD1:
         return {"FUEL_LEVEL_1": round(state.fuel_pct, 1)}
+    if pgn == j1939.PGN_VEP1:
+        return {"BATTERY_POTENTIAL_POWER_INPUT_1": round(state.battery_v, 2)}
     return {}
 
 
@@ -82,6 +94,7 @@ BROADCAST_SCHEDULE = [
     (j1939.PGN_CCVS1, j1939.SA_BRAKES, 6, 0.1),
     (j1939.PGN_LFE1, j1939.SA_ENGINE, 6, 0.5),
     (j1939.PGN_DD1, j1939.SA_INSTRUMENT_CLUSTER, 6, 1.0),
+    (j1939.PGN_VEP1, j1939.SA_ENGINE, 6, 1.0),
 ]
 
 BROADCAST_PGNS = {pgn for pgn, *_ in BROADCAST_SCHEDULE}
@@ -96,17 +109,30 @@ def _encode_frame(pgn: int, source_address: int, priority: int, state) -> can.Me
     )
 
 
+def _faulted_snapshot(
+    vehicle_state: VehicleState, fault_state: Optional[FaultState]
+) -> DrivingState:
+    state = vehicle_state.snapshot()
+    return fault_state.apply(state) if fault_state is not None else state
+
+
 class J1939Broadcaster(threading.Thread):
-    def __init__(self, bus: can.BusABC, vehicle_state: VehicleState):
+    def __init__(
+        self,
+        bus: can.BusABC,
+        vehicle_state: VehicleState,
+        fault_state: Optional[FaultState] = None,
+    ):
         super().__init__(daemon=True)
         self.bus = bus
         self.vehicle_state = vehicle_state
+        self.fault_state = fault_state
         self._next = {pgn: 0.0 for pgn, *_ in BROADCAST_SCHEDULE}
 
     def run(self) -> None:
         while True:
             now = time.time()
-            state = self.vehicle_state.snapshot()
+            state = _faulted_snapshot(self.vehicle_state, self.fault_state)
             for pgn, sa, priority, period in BROADCAST_SCHEDULE:
                 if now < self._next[pgn]:
                     continue
@@ -150,11 +176,11 @@ class J1939RequestResponder(threading.Thread):
 
     def _answer(self, requested_pgn: int) -> None:
         if requested_pgn == j1939.PGN_DM1:
-            self.bus.send(_dm1_message(self.fault_state))
+            send_dm1(self.bus, self.fault_state)
             return
         for pgn, sa, priority, _period in BROADCAST_SCHEDULE:
             if pgn == requested_pgn:
-                state = self.vehicle_state.snapshot()
+                state = _faulted_snapshot(self.vehicle_state, self.fault_state)
                 self.bus.send(_encode_frame(pgn, sa, priority, state))
                 return
 
@@ -164,14 +190,23 @@ def active_dm1_dtcs(fault_state: Optional[FaultState]) -> List[j1939.J1939Dtc]:
     return list(J1939_FAULT_DTCS.get(preset, [])) if preset else []
 
 
-def _dm1_message(fault_state: Optional[FaultState]) -> can.Message:
+def dm1_messages(fault_state: Optional[FaultState]) -> List[can.Message]:
+    """The frame(s) carrying the current DM1: one frame, or a BAM sequence
+    once two or more DTCs push the payload past 8 bytes."""
     dtcs = active_dm1_dtcs(fault_state)
-    data = j1939.build_dm1(dtcs, mil_on=bool(dtcs))
-    return can.Message(
-        arbitration_id=j1939.build_can_id(j1939.PGN_DM1, j1939.SA_ENGINE, priority=6),
-        data=data,
-        is_extended_id=True,
-    )
+    payload = j1939.build_dm1(dtcs, mil_on=bool(dtcs))
+    return [
+        can.Message(arbitration_id=can_id, data=data, is_extended_id=True)
+        for can_id, data in j1939.frames_for_pgn(j1939.PGN_DM1, payload, j1939.SA_ENGINE)
+    ]
+
+
+def send_dm1(bus: can.BusABC, fault_state: Optional[FaultState]) -> None:
+    messages = dm1_messages(fault_state)
+    for i, msg in enumerate(messages):
+        if i > 1:  # gap between BAM data packets, none before the first one
+            time.sleep(j1939.BAM_PACKET_GAP_S)
+        bus.send(msg)
 
 
 class J1939Dm1Broadcaster(threading.Thread):
@@ -185,7 +220,7 @@ class J1939Dm1Broadcaster(threading.Thread):
     def run(self) -> None:
         while True:
             try:
-                self.bus.send(_dm1_message(self.fault_state))
+                send_dm1(self.bus, self.fault_state)
             except Exception:
                 logger.exception("J1939 DM1 broadcast error")
             time.sleep(1.0)
@@ -200,7 +235,7 @@ def start_j1939_threads(
 ) -> List[threading.Thread]:
     """Spin up the three J1939 simulator threads, each on its own bus."""
     threads: List[threading.Thread] = [
-        J1939Broadcaster(make_bus_fn(can_interface, can_channel), vehicle_state),
+        J1939Broadcaster(make_bus_fn(can_interface, can_channel), vehicle_state, fault_state),
         J1939RequestResponder(
             make_bus_fn(can_interface, can_channel), vehicle_state, fault_state
         ),

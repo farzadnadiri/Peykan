@@ -1,6 +1,6 @@
 import pytest
 
-from mcp_can import j1939
+from peykan import j1939
 
 
 def test_parse_build_can_id_roundtrip_pdu2():

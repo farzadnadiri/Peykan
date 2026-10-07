@@ -3,6 +3,106 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+## [0.2.0] - 2026-10-07
+
+### Changed
+- **Renamed from mcp-can to Peykan.** PyPI package `peykan`, import
+  package `peykan`, CLI command `peykan`, environment prefix `PEYKAN_`,
+  repository `farzadnadiri/peykan`. For compatibility the `mcp-can`
+  command still works (with a deprecation note) and `MCP_CAN_*` variables
+  are still read where the `PEYKAN_*` one isn't set (with a warning). The
+  entries below this one use the name each release shipped under.
+  `can-mcp.py` is now `peykan-server.py`.
+- **Requires the `mcp` 2.x SDK (`mcp>=2.1.1,<3`)**, ported from `FastMCP`
+  to `MCPServer`. The 1.x pin made `mcp-can` impossible to install next to
+  current MCP tools such as `ollmcp`; they now share an environment.
+  Tested against `mcp` 2.1.1 and 2.3.0. Sync tools now run on worker
+  threads (v2 behaviour), so blocking bus reads no longer stall the
+  server's event loop. `server/fastmcp_server.py` is now
+  `server/mcp_server.py`; `main()` builds the ASGI app itself via
+  `build_http_app()` (MCP transport + dashboard routes + CORS) instead of
+  monkey-patching `sse_app`. Dropped the unused `httpx-sse` dependency and
+  regenerated `requirements.txt` (Windows-only pins carry markers).
+- **Listens on `127.0.0.1` by default** (was hardcoded `0.0.0.0`). New
+  `MCP_CAN_MCP_HOST` setting and `--host` option on `server`/`demo`; the
+  tools are unauthenticated, so exposing them to the network is now an
+  explicit choice, and the server logs a warning when it is. On loopback,
+  requests with a non-local `Host` header are rejected (421, DNS-rebinding
+  protection); origins in `MCP_CAN_CORS_ALLOW_ORIGINS` are still admitted.
+  The Dockerfile and compose file set `MCP_CAN_MCP_HOST=0.0.0.0`.
+
+### Added
+- **Transmit safety for real hardware** (`safety.py`). On anything but the
+  virtual bus the tools are read-only until `MCP_CAN_ALLOW_TRANSMIT=true`;
+  state-changing services (clear DTCs, ECU reset, UDS writes/routines,
+  fault injection, log replay) also need `MCP_CAN_ALLOW_WRITE_SERVICES=true`.
+  `MCP_CAN_TRANSMIT_ALLOWLIST` restricts arbitration IDs and
+  `MCP_CAN_TRANSMIT_LOG_PATH` appends every frame sent or blocked as JSON
+  lines. Enforced by wrapping the bus (`TransmitGuard.wrap`), so frames
+  can-isotp sends itself are covered too. Refusals return status `blocked`;
+  new `get_transmit_log` tool. The simulator refuses to start on real
+  hardware unless `MCP_CAN_SIMULATOR_ON_HARDWARE=true`. New
+  `MCP_CAN_CAN_BITRATE` setting, a `serial` extra (pyserial, for slcan), and
+  a README section with adapter setup (SocketCAN, PCAN, Kvaser, Vector,
+  slcan).
+- **UDS over ISO-TP** (`uds.py`, `simulator/uds_ecu.py`), using can-isotp
+  and udsoncan (new dependencies). Tools `read_vin` (OBD Mode 09 PID 02,
+  multi-frame, with check-digit validation), `uds_read_data` (0x22),
+  `uds_read_dtcs` (0x19 with status bits), `uds_clear_dtcs` (0x14); CLI
+  `vin`, `uds-read`, `uds-dtcs`, `uds-clear`. The simulated engine ECU
+  (0x7E0/0x7E8) implements session control, tester present, ECU reset,
+  identification and live (F4xx) DIDs, and keeps DTC history: confirmed
+  codes stay stored after a fault clears until 0x14.
+- **J1939 multi-packet transport (BAM, J1939-21).** DM1s with more than one
+  DTC are sent as TP.CM + TP.DT and reassembled by `read_j1939_dtcs`, the
+  CLI and log analysis (`j1939.build_bam`, `TransportReassembler`,
+  `latest_dm1`). New VEP1 PGN (battery potential, SPN 168).
+- **Recorded CAN log analysis and replay** (`logs.py`): `.asc`, `.blf`,
+  `.trc`, candump `.log`, `.csv` (`.mf4` with asammdf). Tools
+  `list_can_logs`, `analyze_can_log` (IDs and rates, signal ranges per
+  source message, OBD and J1939 DTCs, timing gaps on periodic IDs),
+  `get_log_signal`, `replay_can_log`, `stop_log_replay`, and an
+  `analyze_log` prompt. CLI `log-info`, `log-signal`, `replay`, `record`
+  (optionally simulating and injecting a fault mid-recording) and
+  `demo --log`. Clients may only read files under `MCP_CAN_LOG_DIR`. Ships
+  `data/sample_drive.asc`, a 30 s simulated drive with a misfire at 15 s.
+- **Four more fault presets**: `crash` (airbags deployed, vehicle stopped,
+  doors unlocked, B0001), `door_ajar`, `misfire` (rough RPM, P0300, two
+  J1939 DTCs via BAM) and `battery_low` (about 11.3 V, P0562). Presets can
+  now change the driving state itself (`FaultPreset.state_effect`), so a
+  fault shows up consistently on DBC signals, J1939, OBD-II and UDS.
+- Battery voltage: `BATTERY_VOLTAGE` in the DBC's `ENGINE_STATUS`, J1939
+  VEP1, OBD PID 0x42 and UDS DID F442, charging to about 14.2 V with the
+  engine running.
+- Built-in MCP prompts: `diagnose_vehicle`, `explain_dtc(code)`,
+  `trip_summary(duration_s)`, `fault_drill(preset)`; and server
+  `instructions` sent on connect telling clients which tool answers which
+  question. Both aimed at small local models, which otherwise pick
+  roundabout tools or skip steps.
+
+### Fixed
+- OBD-II Mode 01 replies were fixed demo values (speed always 50 km/h,
+  coolant always 90 degC); they now follow the simulated vehicle, and PIDs
+  0x0C (RPM) and 0x42 (module voltage) were added. The supported-PIDs
+  bitmaps now cover 0x20/0x40 too (0x51 was advertised in a range that
+  can't express it).
+- `send_obd_request` / `mcp-can obd-request` took the *first* frame
+  received as the answer, so periodic traffic (e.g. a J1939 EEC1 frame)
+  was sometimes returned instead -- 2 calls in 60 against the simulator,
+  and most of the time on a busy real bus. They now wait for a frame from
+  an OBD response ID (0x7E8-0x7EF) that answers the requested service
+  (positive or negative response).
+- `read_j1939_dtcs` / `mcp-can j1939-dtcs` reported only the most recent
+  DM1 from any ECU, hiding faults from every other ECU on a real truck.
+  They now report each ECU's latest DM1: all active DTCs tagged with their
+  `source_address`, lamps at their most severe state, plus a per-ECU
+  `ecus` list.
+- Simulated cabin temperature noise reduced to a realistic level, and a
+  marginal engine warm-up test made robust.
+
+## [0.1.4] - 2026-10-07
 
 ### Fixed
 - **Simulator no longer reports emergencies during a normal drive.** Body

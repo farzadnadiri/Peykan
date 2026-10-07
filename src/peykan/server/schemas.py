@@ -1,6 +1,6 @@
 """Pydantic response models for MCP tool structured output.
 
-FastMCP derives each tool's `outputSchema` from its return type annotation,
+The MCP SDK derives each tool's `outputSchema` from its return type annotation,
 so these models are what MCP clients see described for each tool — kept
 separate from `models.py`'s internal `Frame` dataclass, which is a plain
 bus-layer value object, not a wire schema.
@@ -114,11 +114,73 @@ class J1939Dtc(BaseModel):
     fmi_name: str
     occurrence_count: int
     conversion_method: int
+    source_address: Optional[int] = None
 
 
 class J1939DtcResult(BaseModel):
     status: str
+    # Set when exactly one ECU broadcast a DM1; with several, see `ecus`.
     source_address: Optional[int] = None
+    # Most severe state of each lamp across ECUs.
     lamps: Dict[str, str] = Field(default_factory=dict)
+    # Active DTCs from every ECU, each tagged with its source_address.
     dtcs: List[J1939Dtc] = Field(default_factory=list)
+    ecus: List[Dict[str, Any]] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
+# --- Transmit safety ----------------------------------------------------------
+class TransmitLogResult(BaseModel):
+    policy: Dict[str, Any]
+    records: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+# --- ISO-TP / UDS ---------------------------------------------------------------
+# `status` is "success", "timeout", "negative_response", "blocked" (refused
+# by the transmit policy) or "error".
+class VinResult(BaseModel):
+    status: str
+    vin: Optional[str] = None
+    check_digit_valid: Optional[bool] = None
+    message: Optional[str] = None
+
+
+class UdsDataResult(BaseModel):
+    status: str
+    values: List[Dict[str, Any]] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
+class UdsDtcResult(BaseModel):
+    status: str
+    dtcs: List[Dict[str, Any]] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
+class UdsClearResult(BaseModel):
+    status: str
+    message: Optional[str] = None
+
+
+# --- Recorded logs -------------------------------------------------------------
+class LogListResult(BaseModel):
+    log_dir: str
+    files: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class LogAnalysisResult(BaseModel):
+    status: str
+    analysis: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+
+
+class LogSignalResult(BaseModel):
+    status: str
+    series: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+
+
+class ReplayStatusResult(BaseModel):
+    status: str
+    replay: Optional[Dict[str, Any]] = None
     message: Optional[str] = None

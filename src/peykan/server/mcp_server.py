@@ -2,20 +2,21 @@ import asyncio
 import json
 import logging
 import time
-import types
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 import can
-from mcp.server.fastmcp import FastMCP
+import uvicorn
+from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
+from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
-from .. import j1939
+from .. import __version__, j1939, logs, uds
 from ..bus import make_bus, shutdown_bus
-from ..config import configure_logging, get_settings
+from ..config import Settings, configure_logging, get_settings
 from ..dbc import decode_frame, load_dbc, signal_int
 from ..diagnostics import (
     REQUEST_MESSAGE,
@@ -23,10 +24,12 @@ from ..diagnostics import (
     ecu_name_from_response_message,
     response_code_name,
 )
-from ..obd import build_request, decode_response, parse_response
+from ..obd import build_request, decode_response, parse_response, wait_for_response
 from ..parsing import IntLike, parse_int
+from ..safety import OBD_WRITE_SERVICES, UDS_WRITE_SERVICES, TransmitBlocked, TransmitGuard
 from ..simulator.faults import FAULT_ACK_ID, PRESETS, build_control_frame
 from .live_state import DEFAULT_HISTORY_WINDOW_S, LiveState
+from .prompts import SERVER_INSTRUCTIONS, register_prompts
 from .schemas import (
     DecodeResult,
     DiagnosticEcuResponse,
@@ -39,10 +42,19 @@ from .schemas import (
     J1939PgnCatalog,
     J1939PgnInfo,
     J1939RequestResult,
+    LogAnalysisResult,
+    LogListResult,
+    LogSignalResult,
     ObdResponse,
+    ReplayStatusResult,
     SignalSample,
     SignalState,
+    TransmitLogResult,
+    UdsClearResult,
+    UdsDataResult,
+    UdsDtcResult,
     VehicleSnapshot,
+    VinResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,10 +64,19 @@ _DASHBOARD_HTML = (Path(__file__).parent / "templates" / "dashboard.html").read_
 )
 
 
-def create_app() -> FastMCP:
-    """Create a FastMCP server exposing CAN tools and DBC metadata."""
+# Hosts that only accept connections from this machine. Binding to anything
+# else exposes unauthenticated tools (some of which transmit on the bus) to
+# the network, so that has to be an explicit choice (PEYKAN_MCP_HOST).
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def create_app() -> MCPServer:
+    """Create an MCP server exposing CAN tools, prompts and DBC metadata."""
     settings = get_settings()
-    mcp = FastMCP("Vehicle CAN MCP")
+    mcp = MCPServer(
+        "Peykan", version=__version__, instructions=SERVER_INSTRUCTIONS
+    )
+    register_prompts(mcp)
     db = load_dbc(settings.dbc_path)
     live_state = LiveState(
         db,
@@ -64,6 +85,9 @@ def create_app() -> FastMCP:
         history_window_s=max(settings.max_duration_s, DEFAULT_HISTORY_WINDOW_S),
     )
     live_state.start()
+    # Every frame a tool transmits goes through this (see safety.py).
+    guard = TransmitGuard(settings)
+    replay: Dict[str, Optional[logs.LogReplayer]] = {"current": None}
 
     def _capped_duration(duration_s: float) -> float:
         if duration_s > settings.max_duration_s:
@@ -195,13 +219,17 @@ def create_app() -> FastMCP:
         PID is one the simulator implements. `service` and `pid` may be integers
         or hex strings."""
         timeout_s = _capped_duration(timeout_s)
-        bus = make_bus(settings.can_interface, settings.can_channel)
+        raw_bus = make_bus(settings.can_interface, settings.can_channel)
         try:
-            arb_id, data = build_request(
-                parse_int(service), parse_int(pid) if pid is not None else None
+            service_id = parse_int(service)
+            bus = guard.wrap(
+                raw_bus, "send_obd_request", write=service_id in OBD_WRITE_SERVICES
             )
+            arb_id, data = build_request(service_id, parse_int(pid) if pid is not None else None)
             bus.send(can.Message(arbitration_id=arb_id, data=data, is_extended_id=False))
-            msg = bus.recv(timeout=timeout_s)
+            # The bus also carries periodic ECU traffic: wait for the frame
+            # that actually answers this request, not just the next one.
+            msg = wait_for_response(bus, service_id, timeout_s)
             if not msg:
                 return ObdResponse(status="timeout", message="No OBD-II response within timeout_s")
             response_service, resp_pid, value_bytes = parse_response(msg.data)
@@ -213,10 +241,12 @@ def create_app() -> FastMCP:
                 decoded=decode_response(response_service, resp_pid, value_bytes),
                 raw_data=list(msg.data),
             )
+        except TransmitBlocked as e:
+            return ObdResponse(status="blocked", message=str(e))
         except Exception as e:
             return ObdResponse(status="error", message=str(e))
         finally:
-            shutdown_bus(bus)
+            shutdown_bus(raw_bus)
 
     @mcp.tool()
     def send_diagnostic_request(
@@ -234,8 +264,13 @@ def create_app() -> FastMCP:
         response_frame_ids = {
             db.get_message_by_name(name).frame_id: name for name in RESPONSE_MESSAGES
         }
-        bus = make_bus(settings.can_interface, settings.can_channel)
+        raw_bus = make_bus(settings.can_interface, settings.can_channel)
         try:
+            bus = guard.wrap(
+                raw_bus,
+                "send_diagnostic_request",
+                write=parse_int(service_id) in UDS_WRITE_SERVICES,
+            )
             payload = request_msg.encode(
                 {
                     "SERVICE_ID": parse_int(service_id),
@@ -272,10 +307,12 @@ def create_app() -> FastMCP:
                     status="timeout", message="No ECU responded within timeout_s"
                 )
             return DiagnosticResult(status="success", responses=responses)
+        except TransmitBlocked as e:
+            return DiagnosticResult(status="blocked", message=str(e))
         except Exception as e:
             return DiagnosticResult(status="error", message=str(e))
         finally:
-            shutdown_bus(bus)
+            shutdown_bus(raw_bus)
 
     @mcp.tool()
     def activate_fault_scenario(
@@ -283,21 +320,21 @@ def create_app() -> FastMCP:
         timeout_s: float = 2.0,
     ) -> FaultScenarioResult:
         """Activate a fault-injection scenario in the simulator, or clear the
-        active one by passing preset=None. Available presets: "overheat"
-        (engine at its hottest reportable temperature, SYSTEM_STATUS faults),
-        "abs_fault" (all wheel speed sensors stuck at zero, SYSTEM_STATUS
-        faults), "low_fuel" (fuel level pinned critically low). Where a
-        preset sets DTCs, they then show up in `send_obd_request`'s Mode 03
-        (service=3) response. Only affects a simulator sharing this
-        process's virtual bus (`mcp-can demo`)."""
+        active one by passing preset=None. Presets: "overheat", "abs_fault",
+        "low_fuel", "crash", "door_ajar", "misfire", "battery_low" (each
+        result includes a description). Where a preset sets DTCs they show up
+        in send_obd_request service=3, uds_read_dtcs and (for engine faults)
+        read_j1939_dtcs. Only affects a simulator sharing this process's
+        virtual bus (`peykan demo`)."""
         timeout_s = _capped_duration(timeout_s)
         if preset is not None and preset not in PRESETS:
             return FaultScenarioResult(
                 status="error",
                 message=f"Unknown preset {preset!r}. Choices: {', '.join(PRESETS)}",
             )
-        bus = make_bus(settings.can_interface, settings.can_channel)
+        raw_bus = make_bus(settings.can_interface, settings.can_channel)
         try:
+            bus = guard.wrap(raw_bus, "activate_fault_scenario", write=True)
             arb_id, data = build_control_frame(preset)
             bus.send(can.Message(arbitration_id=arb_id, data=data, is_extended_id=False))
             end = time.time() + timeout_s
@@ -314,10 +351,12 @@ def create_app() -> FastMCP:
             return FaultScenarioResult(
                 status="timeout", message="No ack from simulator within timeout_s"
             )
+        except TransmitBlocked as e:
+            return FaultScenarioResult(status="blocked", message=str(e))
         except Exception as e:
             return FaultScenarioResult(status="error", message=str(e))
         finally:
-            shutdown_bus(bus)
+            shutdown_bus(raw_bus)
 
     def _decode_j1939(arbitration_id: int, data: bytes) -> J1939DecodeResult:
         parsed = j1939.parse_can_id(arbitration_id)
@@ -364,10 +403,11 @@ def create_app() -> FastMCP:
         `pgn` as an acronym ("EEC1" for engine speed, "ET1" for coolant
         temperature), a hex string ("0xF004") or an integer; see
         `list_j1939_pgns`. Needs a simulator on this process's bus
-        (`mcp-can demo`)."""
+        (`peykan demo`)."""
         timeout_s = _capped_duration(timeout_s)
-        bus = make_bus(settings.can_interface, settings.can_channel)
+        raw_bus = make_bus(settings.can_interface, settings.can_channel)
         try:
+            bus = guard.wrap(raw_bus, "request_j1939_pgn")
             requested = j1939.resolve_pgn(pgn)
             can_id, data = j1939.build_request_pgn(requested)
             bus.send(can.Message(arbitration_id=can_id, data=data, is_extended_id=True))
@@ -395,39 +435,204 @@ def create_app() -> FastMCP:
                 requested_pgn_hex=f"0x{requested:04X}",
                 responses=responses,
             )
+        except TransmitBlocked as e:
+            return J1939RequestResult(status="blocked", message=str(e))
         except Exception as e:
             return J1939RequestResult(status="error", message=str(e))
         finally:
-            shutdown_bus(bus)
+            shutdown_bus(raw_bus)
 
     @mcp.tool()
     def read_j1939_dtcs(duration_s: float = 3.0) -> J1939DtcResult:
         """Read the most recent J1939 DM1 (active diagnostic trouble codes)
-        broadcast from the last `duration_s` seconds: lamp status plus every
-        active SPN/FMI. Served from the frame history buffer -- see
+        from every ECU that broadcast one in the last `duration_s` seconds:
+        lamp status plus every active SPN/FMI, each tagged with the source
+        address of the ECU reporting it. Served from the frame history buffer -- see
         `read_can_frames`. An empty `dtcs` list means no active faults."""
         duration_s = _capped_duration(duration_s)
-        since = time.time() - duration_s
-        latest: Optional[Dict[str, Any]] = None
-        for f in live_state.frames_since(since):
-            try:
-                parsed = j1939.parse_can_id(f["arbitration_id"])
-            except Exception:
-                continue
-            if parsed.pgn == j1939.PGN_DM1:
-                latest = f
-        if latest is None:
+        # latest_dm1 also reassembles BAM: a DM1 with 2+ DTCs is longer than
+        # one frame and arrives as a TP.CM announcement + TP.DT packets.
+        by_source = j1939.latest_dm1_by_source(
+            live_state.frames_since(time.time() - duration_s)
+        )
+        if not by_source:
             return J1939DtcResult(
                 status="timeout", message="No DM1 broadcast seen within duration_s"
             )
-        parsed = j1939.parse_can_id(latest["arbitration_id"])
-        lamps, dtcs = j1939.parse_dm1(bytes(latest["data"]))
+        merged = j1939.merge_dm1s(by_source)
         return J1939DtcResult(
             status="success",
-            source_address=parsed.source_address,
-            lamps=lamps,
-            dtcs=[J1939Dtc(**d.as_dict()) for d in dtcs],
+            source_address=next(iter(by_source)) if len(by_source) == 1 else None,
+            lamps=merged["lamps"],
+            dtcs=[J1939Dtc(**d.as_dict(), source_address=sa) for sa, d in merged["dtcs"]],
+            ecus=[
+                {"source_address": sa, "lamps": dm1["lamps"], "active_dtcs": len(dm1["dtcs"])}
+                for sa, dm1 in sorted(by_source.items())
+            ],
         )
+
+    # ---------------------------------------------------------- ISO-TP / UDS
+    def _uds_failure(result_type: Any, exc: Exception) -> Any:
+        if isinstance(exc, TransmitBlocked):
+            return result_type(status="blocked", message=str(exc))
+        if isinstance(exc, uds.NegativeResponseException):
+            return result_type(status="negative_response", message=uds.uds_error(exc))
+        if isinstance(exc, (uds.TimeoutException, TimeoutError)):
+            return result_type(status="timeout", message=uds.uds_error(exc))
+        return result_type(status="error", message=str(exc))
+
+    @mcp.tool()
+    def read_vin(timeout_s: float = 2.0) -> VinResult:
+        """Read the Vehicle Identification Number via OBD-II Mode 09 PID 02
+        (a multi-frame ISO-TP response), with a check-digit validity flag."""
+        try:
+            result = uds.read_vin_obd(settings, guard, _capped_duration(timeout_s))
+            return VinResult(status="success", **result)
+        except Exception as e:
+            return _uds_failure(VinResult, e)
+
+    @mcp.tool()
+    def uds_read_data(
+        dids: Union[List[IntLike], IntLike],
+        request_id: IntLike = "0x7E0",
+        response_id: IntLike = "0x7E8",
+        timeout_s: float = 2.0,
+    ) -> UdsDataResult:
+        """UDS ReadDataByIdentifier (0x22) over ISO-TP. `dids` are data
+        identifiers as hex strings, e.g. ["0xF190"] (VIN), "0xF18C" (ECU
+        serial), "0xF195" (software version), "0xF40C" (engine RPM),
+        "0xF40D" (speed), "0xF405" (coolant), "0xF442" (voltage). Defaults
+        address the engine ECU (request 0x7E0, response 0x7E8)."""
+        try:
+            with uds.uds_client(
+                settings, guard, "uds_read_data", False,
+                parse_int(request_id), parse_int(response_id), _capped_duration(timeout_s),
+            ) as client:
+                did_list = dids if isinstance(dids, list) else [dids]
+                values = uds.read_dids(client, [parse_int(d) for d in did_list])
+            return UdsDataResult(status="success", values=values)
+        except Exception as e:
+            return _uds_failure(UdsDataResult, e)
+
+    @mcp.tool()
+    def uds_read_dtcs(
+        status_mask: IntLike = "0xFF",
+        request_id: IntLike = "0x7E0",
+        response_id: IntLike = "0x7E8",
+        timeout_s: float = 2.0,
+    ) -> UdsDtcResult:
+        """UDS ReadDTCInformation (0x19, reportDTCByStatusMask): stored DTCs
+        with their status bits. "test_failed" means the fault is present now;
+        "confirmed" alone means it happened earlier and is stored in memory
+        until cleared."""
+        try:
+            with uds.uds_client(
+                settings, guard, "uds_read_dtcs", False,
+                parse_int(request_id), parse_int(response_id), _capped_duration(timeout_s),
+            ) as client:
+                dtcs = uds.read_dtcs(client, parse_int(status_mask))
+            return UdsDtcResult(status="success", dtcs=dtcs)
+        except Exception as e:
+            return _uds_failure(UdsDtcResult, e)
+
+    @mcp.tool()
+    def uds_clear_dtcs(
+        request_id: IntLike = "0x7E0",
+        response_id: IntLike = "0x7E8",
+        timeout_s: float = 2.0,
+    ) -> UdsClearResult:
+        """UDS ClearDiagnosticInformation (0x14) for all DTC groups. Changes
+        ECU state: only call it when the user asks to clear codes. Faults
+        that are still present are detected again immediately."""
+        try:
+            with uds.uds_client(
+                settings, guard, "uds_clear_dtcs", True,
+                parse_int(request_id), parse_int(response_id), _capped_duration(timeout_s),
+            ) as client:
+                client.clear_dtc(0xFFFFFF)
+            return UdsClearResult(status="success")
+        except Exception as e:
+            return _uds_failure(UdsClearResult, e)
+
+    @mcp.tool()
+    def get_transmit_log(limit: int = 20) -> TransmitLogResult:
+        """The transmit policy (is sending allowed on this interface, are
+        state-changing services allowed, ID allowlist) and the most recent
+        frames the tools sent or were blocked from sending."""
+        return TransmitLogResult(policy=guard.policy(), records=guard.records(max(1, limit)))
+
+    # ---------------------------------------------------------- recorded logs
+    @mcp.tool()
+    def list_can_logs() -> LogListResult:
+        """CAN log files available to analyze (in PEYKAN_LOG_DIR), plus the
+        bundled "sample" drive recording."""
+        return LogListResult(
+            log_dir=str(Path(settings.log_dir).resolve()), files=logs.list_logs(settings.log_dir)
+        )
+
+    @mcp.tool()
+    def analyze_can_log(path: str) -> LogAnalysisResult:
+        """Summarise a recorded CAN log (.asc, .blf, .trc, candump .log, .csv):
+        duration, every arbitration ID with its rate, decoded signal ranges
+        (min/max/mean/first/last), trouble codes seen (OBD-II and J1939 DM1)
+        and timing gaps. `path` is relative to PEYKAN_LOG_DIR, or "sample"."""
+        try:
+            log = logs.load_log(logs.resolve_log_path(path, settings.log_dir))
+            return LogAnalysisResult(status="success", analysis=logs.analyze_log(log, db))
+        except Exception as e:
+            return LogAnalysisResult(status="error", message=str(e))
+
+    @mcp.tool()
+    def get_log_signal(
+        path: str, signal_name: str, max_points: int = 100, message: Optional[str] = None
+    ) -> LogSignalResult:
+        """One decoded signal's values over a recorded log, as (time, value)
+        points downsampled to at most `max_points`, plus min/max/mean. Use
+        analyze_can_log first to see which signals the log contains; when a
+        name occurs in several messages, `message` (e.g. "J1939:EEC1")
+        picks one."""
+        try:
+            log = logs.load_log(logs.resolve_log_path(path, settings.log_dir))
+            points = max(2, min(max_points, 1000))
+            series = logs.signal_series(log, db, signal_name, points, message)
+            return LogSignalResult(status="success", series=series)
+        except Exception as e:
+            return LogSignalResult(status="error", message=str(e))
+
+    @mcp.tool()
+    def replay_can_log(path: str, speed: float = 1.0, loop: bool = False) -> ReplayStatusResult:
+        """Replay a recorded log onto the bus with its original timing
+        (`speed` 2.0 = twice as fast), so the live tools and the dashboard
+        work on it. Transmits every frame in the log, so it counts as a
+        state-changing action under the transmit policy."""
+        try:
+            log = logs.load_log(logs.resolve_log_path(path, settings.log_dir))
+            first_id = log.frames[0]["arbitration_id"] if log.frames else 0
+            guard.check(first_id, "replay_can_log", write=True)
+            current = replay["current"]
+            if current is not None:
+                current.stop()
+            bus = guard.wrap(
+                make_bus(settings.can_interface, settings.can_channel), "replay_can_log", True
+            )
+            replayer = logs.LogReplayer(log, bus, speed=speed, loop=loop)
+            replayer.start()
+            replay["current"] = replayer
+            return ReplayStatusResult(status="success", replay=replayer.status())
+        except TransmitBlocked as e:
+            return ReplayStatusResult(status="blocked", message=str(e))
+        except Exception as e:
+            return ReplayStatusResult(status="error", message=str(e))
+
+    @mcp.tool()
+    def stop_log_replay() -> ReplayStatusResult:
+        """Stop the log replay started by replay_can_log (and report how far it got)."""
+        current = replay["current"]
+        if current is None:
+            return ReplayStatusResult(status="success", message="No replay running")
+        current.stop()
+        current.join(timeout=2.0)
+        return ReplayStatusResult(status="success", replay=current.status())
 
     @mcp.resource("file://vehicle.dbc")
     def dbc_info() -> Dict[str, Any]:
@@ -497,7 +702,7 @@ def create_app() -> FastMCP:
 
     # Read-only live dashboard: a static page (below) polling this SSE stream.
     # Only shows data when a simulator shares this process's virtual bus
-    # (i.e. `mcp-can demo`) -- see live_state.py.
+    # (i.e. `peykan demo`) -- see live_state.py.
     # Someone opening http://localhost:<port>/ in a browser wants the
     # dashboard, not a bare 404.
     @mcp.custom_route("/", methods=["GET"])
@@ -517,72 +722,75 @@ def create_app() -> FastMCP:
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
-    # CORS so browser-based MCP hosts (Inspector) can reach SSE. Origins
-    # default to "*" for the zero-friction demo experience; see
-    # Settings.cors_allow_origins. Credentials are only allowed once that's
-    # narrowed to specific origins -- wildcard-origin + allow_credentials is
-    # a combination browsers reject outright, so enabling it for "*" would
-    # just be a sloppy default with no actual browser benefit.
-    original_sse_app = mcp.sse_app
-    cors_origins = settings.cors_allow_origins
-    cors_credentials = cors_origins != ["*"]
-
-    def _cors_sse_app(self: FastMCP, *args: Any, **kwargs: Any):
-        # Forward args/kwargs as-is: FastMCP.sse_app()'s signature has changed
-        # across mcp SDK versions (e.g. an added `mount_path` param), so this
-        # stays compatible without pinning to one exact shape.
-        app = original_sse_app(*args, **kwargs)
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=cors_origins,
-            allow_methods=["*"],
-            allow_headers=["*"],
-            allow_credentials=cors_credentials,
-        )
-        return app
-
-    mcp.sse_app = types.MethodType(_cors_sse_app, mcp)  # type: ignore[method-assign]
-
     return mcp
 
 
-def _mcp_sdk_version() -> str:
-    try:
-        return version("mcp")
-    except PackageNotFoundError:
-        return "unknown"
+def _transport_security(settings: Settings) -> Optional[TransportSecuritySettings]:
+    """DNS-rebinding protection for loopback binds, as the SDK enables by
+    default, but also admitting any origins configured in
+    `cors_allow_origins` so narrowing CORS to a real host still works."""
+    if settings.mcp_host not in LOOPBACK_HOSTS:
+        return None  # an explicit network bind; Host headers will vary
+    origins = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
+    if settings.cors_allow_origins != ["*"]:
+        origins += settings.cors_allow_origins
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
+        allowed_origins=origins,
+    )
+
+
+def build_http_app(mcp: MCPServer, settings: Settings) -> Starlette:
+    """The ASGI app `main()` serves: the MCP endpoint for the configured
+    transport plus the dashboard/health routes, with CORS.
+
+    CORS lets browser-based MCP hosts (e.g. MCP Inspector) reach the server.
+    Origins default to "*" for the zero-friction demo experience; see
+    Settings.cors_allow_origins. Credentials are only allowed once that's
+    narrowed to specific origins -- wildcard-origin + allow_credentials is a
+    combination browsers reject outright.
+    """
+    security = _transport_security(settings)
+    if settings.mcp_transport == "streamable-http":
+        app = mcp.streamable_http_app(host=settings.mcp_host, transport_security=security)
+    else:
+        app = mcp.sse_app(host=settings.mcp_host, transport_security=security)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allow_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=settings.cors_allow_origins != ["*"],
+    )
+    return app
 
 
 def main() -> None:
     settings = get_settings()
     configure_logging(settings)
     mcp = create_app()
-    mcp.settings.port = settings.mcp_port
-    # Ensure accessible outside container/host
-    mcp.settings.host = "0.0.0.0"
+    if settings.mcp_transport == "stdio":
+        mcp.run("stdio")
+        return
+
+    host, port = settings.mcp_host, settings.mcp_port
     logger.info(
-        "Starting MCP-CAN server on %s:%s (transport=%s)",
-        mcp.settings.host,
-        mcp.settings.port,
-        settings.mcp_transport,
+        "Starting Peykan server on %s:%s (transport=%s)", host, port, settings.mcp_transport
     )
-    if settings.mcp_transport != "stdio":
-        endpoint = (
-            mcp.settings.sse_path
-            if settings.mcp_transport == "sse"
-            # Older mcp SDKs predate streamable-http and lack this setting.
-            else getattr(mcp.settings, "streamable_http_path", "/mcp")
+    if host not in LOOPBACK_HOSTS:
+        logger.warning(
+            "Listening on %s: other machines on the network can reach this server, "
+            "and its tools have no authentication. Use PEYKAN_MCP_HOST=127.0.0.1 "
+            "unless that's intended (e.g. inside Docker).",
+            host,
         )
-        logger.info("Dashboard:    http://localhost:%s/dashboard", mcp.settings.port)
-        logger.info("MCP endpoint: http://localhost:%s%s", mcp.settings.port, endpoint)
-    try:
-        mcp.run(transport=settings.mcp_transport)  # type: ignore[arg-type]
-    except ValueError:
-        if settings.mcp_transport != "sse":
-            logger.error(
-                "Transport %r is not supported by the installed mcp SDK (%s). "
-                "Set MCP_CAN_MCP_TRANSPORT=sse, or upgrade the mcp package.",
-                settings.mcp_transport,
-                _mcp_sdk_version(),
-            )
-        raise
+    endpoint = "/mcp" if settings.mcp_transport == "streamable-http" else "/sse"
+    logger.info("Dashboard:    http://localhost:%s/dashboard", port)
+    logger.info("MCP endpoint: http://localhost:%s%s", port, endpoint)
+    uvicorn.run(
+        build_http_app(mcp, settings),
+        host=host,
+        port=port,
+        log_level=settings.log_level.lower(),
+    )

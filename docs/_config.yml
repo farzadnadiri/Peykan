@@ -1,10 +1,10 @@
-title: "MCP-CAN"
+title: "Peykan"
 description: >-
   MCP server exposing vehicle CAN bus, OBD-II and SAE J1939 diagnostics to LLMs,
   with a built-in virtual CAN simulator. No hardware required.
 theme: jekyll-theme-cayman
 url: "https://farzadnadiri.github.io"
-baseurl: "/MCP-CAN"
+baseurl: "/peykan"
 show_downloads: false
 plugins:
   - jekyll-seo-tag

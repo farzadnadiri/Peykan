@@ -40,6 +40,7 @@ BO_ 256 ENGINE_STATUS: 8 ENGINE
  SG_ THROTTLE_POSITION : 24|8@1+ (0.4,0) [0|100] "%" BODY_CONTROL,DIAG_TOOL
  SG_ ENGINE_LOAD : 32|8@1+ (0.4,0) [0|100] "%" BODY_CONTROL,DIAG_TOOL
  SG_ FUEL_LEVEL : 40|8@1+ (0.4,0) [0|100] "%" BODY_CONTROL,DIAG_TOOL
+ SG_ BATTERY_VOLTAGE : 48|8@1+ (0.1,0) [0|25.5] "V" BODY_CONTROL,DIAG_TOOL
 
 BO_ 512 ABS_STATUS: 8 ABS
  SG_ WHEEL_SPEED_FL : 0|16@1+ (0.01,0) [0|300] "kph" BODY_CONTROL,DIAG_TOOL
@@ -104,6 +105,7 @@ BA_ "FrameFormat" BO_ 1047 1;
 CM_ SG_ 256 ENGINE_SPEED "Current engine RPM";
 CM_ SG_ 256 ENGINE_TEMP "Engine coolant temperature";
 CM_ SG_ 256 THROTTLE_POSITION "Current throttle pedal position";
+CM_ SG_ 256 BATTERY_VOLTAGE "System (battery) voltage";
 CM_ SG_ 1047 SERVICE_ID "Service identifier for diagnostic requests (e.g. 0x22 = Read Data)";
 CM_ SG_ 1047 PARAMETER_ID "Parameter identifier for the requested data";
 CM_ BO_ 1048 "Diagnostic response from Engine ECU";

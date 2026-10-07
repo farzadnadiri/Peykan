@@ -13,10 +13,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy project files
-COPY . /home/pi/MCP-Demo
+COPY . /home/pi/peykan
 
 # Set working directory
-WORKDIR /home/pi/MCP-Demo
+WORKDIR /home/pi/peykan
 
 # Create and activate virtual environment
 RUN python3 -m venv /opt/venv
@@ -27,7 +27,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 RUN pip3 install --no-cache-dir -e .
 
 # Ensure src layout is importable if running scripts directly
-ENV PYTHONPATH="/home/pi/MCP-Demo/src:${PYTHONPATH}"
+ENV PYTHONPATH="/home/pi/peykan/src:${PYTHONPATH}"
 
 # Expose MCP and other relevant ports
 EXPOSE 6278 80 443 5000 8080
@@ -37,9 +37,12 @@ RUN useradd -ms /bin/bash appuser && chown -R appuser:appuser /home/pi
 USER appuser
 
 # Entrypoint: run MCP and simulation concurrently using virtual backend
-ENV MCP_CAN_CAN_INTERFACE=virtual
-ENV MCP_CAN_CAN_CHANNEL=bus0
-CMD ["bash", "-c", "mcp-can server --port 6278 & mcp-can simulate && wait"]
+ENV PEYKAN_CAN_INTERFACE=virtual
+ENV PEYKAN_CAN_CHANNEL=bus0
+# The server listens on loopback by default; inside a container it must
+# accept connections from the host's port mapping.
+ENV PEYKAN_MCP_HOST=0.0.0.0
+CMD ["bash", "-c", "peykan server --port 6278 & peykan simulate && wait"]
 
 # Healthcheck: verify server port is accepting connections
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \

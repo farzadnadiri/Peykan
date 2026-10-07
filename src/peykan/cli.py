@@ -2,14 +2,16 @@ import json
 import os
 import threading
 import time as _time
-from typing import List, Optional
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Callable, Iterator, List, Optional
 
 import can
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import j1939
+from . import j1939, logs, uds
 from .bus import make_bus, read_frames, shutdown_bus
 from .config import configure_logging, get_settings
 from .dbc import decode_frame, load_dbc, signal_int
@@ -19,13 +21,14 @@ from .diagnostics import (
     ecu_name_from_response_message,
     response_code_name,
 )
-from .obd import build_request, decode_response, parse_response
+from .obd import build_request, decode_response, parse_response, wait_for_response
 from .parsing import parse_int
-from .server.fastmcp_server import main as run_server
+from .safety import OBD_WRITE_SERVICES, UDS_WRITE_SERVICES, TransmitBlocked, TransmitGuard
+from .server.mcp_server import main as run_server
 from .simulator.faults import FAULT_ACK_ID, PRESETS, build_control_frame
 from .simulator.runner import run_simulator
 
-app = typer.Typer(help="MCP-CAN: simulate, inspect and serve CAN data over MCP.")
+app = typer.Typer(help="Peykan: simulate, inspect and serve CAN data over MCP.")
 console = Console()
 
 
@@ -34,17 +37,54 @@ def _main_callback() -> None:
     configure_logging()
 
 
+def legacy_main() -> None:
+    """Entry point for the deprecated `mcp-can` command."""
+    import sys
+
+    print(
+        "Note: the mcp-can command is deprecated; this project is now called "
+        "Peykan, use `peykan` instead.",
+        file=sys.stderr,
+    )
+    app()
+
+
+@contextmanager
+def _transmit_bus(purpose: str, write: bool = False) -> Iterator[can.BusABC]:
+    """A bus whose sends go through the transmit policy (see safety.py);
+    a refusal ends the command with exit code 2 and the policy's reason."""
+    settings = get_settings()
+    raw = make_bus(settings.can_interface, settings.can_channel)
+    try:
+        yield TransmitGuard(settings).wrap(raw, purpose, write)
+    except TransmitBlocked as e:
+        console.print(f"[red]Blocked by the transmit policy: {e}[/red]")
+        raise typer.Exit(code=2)
+    finally:
+        shutdown_bus(raw)
+
+
+def _log_path(file: str) -> Path:
+    return logs.SAMPLE_LOG if file == "sample" else Path(file)
+
+
 @app.command()
 def server(
+    host: Optional[str] = typer.Option(
+        None,
+        help="Interface to listen on (default 127.0.0.1; 0.0.0.0 exposes it to the network)",
+    ),
     port: Optional[int] = typer.Option(None, help="MCP server port (default from env)"),
     transport: Optional[str] = typer.Option(
         None, help="MCP transport: sse | streamable-http | stdio (default from env)"
     ),
 ) -> None:
+    if host is not None:
+        os.environ["PEYKAN_MCP_HOST"] = host
     if port is not None:
-        os.environ["MCP_CAN_MCP_PORT"] = str(port)
+        os.environ["PEYKAN_MCP_PORT"] = str(port)
     if transport is not None:
-        os.environ["MCP_CAN_MCP_TRANSPORT"] = transport
+        os.environ["PEYKAN_MCP_TRANSPORT"] = transport
     run_server()
 
 
@@ -251,15 +291,12 @@ def obd_request(
     timeout: float = 1.0,
 ) -> None:
     """Send a basic OBD-II (SAE J1979) request and print the first response as JSON."""
-    settings = get_settings()
-    bus = make_bus(settings.can_interface, settings.can_channel)
     svc = parse_int(service)
     parsed_pid: Optional[int] = parse_int(pid) if pid is not None else None
-    arb_id, data = build_request(svc, parsed_pid)
-    req = can.Message(arbitration_id=arb_id, data=data, is_extended_id=False)
-    bus.send(req)
-    msg = bus.recv(timeout=timeout)
-    try:
+    with _transmit_bus("obd-request", write=svc in OBD_WRITE_SERVICES) as bus:
+        arb_id, data = build_request(svc, parsed_pid)
+        bus.send(can.Message(arbitration_id=arb_id, data=data, is_extended_id=False))
+        msg = wait_for_response(bus, svc, timeout)
         if not msg:
             typer.echo(json.dumps({"status": "timeout"}))
             raise typer.Exit(code=1)
@@ -270,8 +307,6 @@ def obd_request(
             "decoded": decode_response(response_service, resp_pid, value_bytes),
         }
         typer.echo(json.dumps(out, indent=2))
-    finally:
-        shutdown_bus(bus)
 
 
 @app.command("diag-request")
@@ -289,8 +324,8 @@ def diag_request(
     print every ECU's response as JSON."""
     settings = get_settings()
     db = load_dbc(settings.dbc_path)
-    bus = make_bus(settings.can_interface, settings.can_channel)
-    try:
+    write = parse_int(service_id) in UDS_WRITE_SERVICES
+    with _transmit_bus("diag-request", write=write) as bus:
         request_msg = db.get_message_by_name(REQUEST_MESSAGE)
         response_frame_ids = {
             db.get_message_by_name(name).frame_id: name for name in RESPONSE_MESSAGES
@@ -327,8 +362,6 @@ def diag_request(
             typer.echo(json.dumps({"status": "timeout"}))
             raise typer.Exit(code=1)
         typer.echo(json.dumps({"status": "success", "responses": responses}, indent=2))
-    finally:
-        shutdown_bus(bus)
 
 
 @app.command("fault")
@@ -340,7 +373,7 @@ def fault_scenario(
 ) -> None:
     """Activate (or clear) a fault-injection scenario in a running simulator.
 
-    Requires `mcp-can simulate`/`demo` to already be running: this sends a
+    Requires `peykan simulate`/`demo` to already be running: this sends a
     control frame over the bus and waits for the simulator to ack it, the
     same round-trip pattern as `obd-request`/`diag-request`.
     """
@@ -356,12 +389,10 @@ def fault_scenario(
     target: Optional[str] = None if preset == "clear" else preset
     if target is not None and target not in PRESETS:
         console.print(
-            f"[red]Unknown scenario '{preset}'. Run 'mcp-can fault list' to see options.[/red]"
+            f"[red]Unknown scenario '{preset}'. Run 'peykan fault list' to see options.[/red]"
         )
         raise typer.Exit(code=1)
-    settings = get_settings()
-    bus = make_bus(settings.can_interface, settings.can_channel)
-    try:
+    with _transmit_bus("fault", write=True) as bus:
         arb_id, data = build_control_frame(target)
         bus.send(can.Message(arbitration_id=arb_id, data=data, is_extended_id=False))
         end = _time.time() + timeout
@@ -372,8 +403,6 @@ def fault_scenario(
                 return
         console.print("[yellow]No ack from simulator -- is it running?[/yellow]")
         raise typer.Exit(code=1)
-    finally:
-        shutdown_bus(bus)
 
 
 def _parse_data_bytes(data: str) -> List[int]:
@@ -461,9 +490,7 @@ def j1939_request(
 ) -> None:
     """Send a J1939 Request PGN (0xEA00) and print every decoded response."""
     requested = j1939.resolve_pgn(pgn)
-    settings = get_settings()
-    bus = make_bus(settings.can_interface, settings.can_channel)
-    try:
+    with _transmit_bus("j1939-request") as bus:
         can_id, data = j1939.build_request_pgn(requested)
         bus.send(can.Message(arbitration_id=can_id, data=data, is_extended_id=True))
         responses = []
@@ -485,8 +512,6 @@ def j1939_request(
             typer.echo(json.dumps({"status": "timeout"}))
             raise typer.Exit(code=1)
         typer.echo(json.dumps({"status": "success", "responses": responses}, indent=2, default=str))
-    finally:
-        shutdown_bus(bus)
 
 
 @app.command("j1939-dtcs")
@@ -495,21 +520,25 @@ def j1939_dtcs(seconds: float = typer.Option(3.0, help="How long to listen for a
     settings = get_settings()
     bus = make_bus(settings.can_interface, settings.can_channel)
     try:
-        latest = None
+        frames = []
         end = _time.time() + seconds
         while _time.time() < end:
             msg = bus.recv(timeout=0.1)
-            if not msg or not getattr(msg, "is_extended_id", False):
-                continue
-            if j1939.parse_can_id(msg.arbitration_id).pgn == j1939.PGN_DM1:
-                latest = msg
-        if latest is None:
+            if msg and getattr(msg, "is_extended_id", False):
+                frames.append({"arbitration_id": msg.arbitration_id, "data": bytes(msg.data)})
+        # Handles both single-frame DM1s and multi-packet (BAM) ones.
+        by_source = j1939.latest_dm1_by_source(frames)
+        if not by_source:
             typer.echo(json.dumps({"status": "timeout"}))
             raise typer.Exit(code=1)
-        lamps, dtcs = j1939.parse_dm1(bytes(latest.data))
+        merged = j1939.merge_dm1s(by_source)
         typer.echo(
             json.dumps(
-                {"status": "success", "lamps": lamps, "dtcs": [d.as_dict() for d in dtcs]},
+                {
+                    "status": "success",
+                    "lamps": merged["lamps"],
+                    "dtcs": [{**d.as_dict(), "source_address": sa} for sa, d in merged["dtcs"]],
+                },
                 indent=2,
             )
         )
@@ -517,24 +546,243 @@ def j1939_dtcs(seconds: float = typer.Option(3.0, help="How long to listen for a
         shutdown_bus(bus)
 
 
+def _uds_options_ids(request_id: str, response_id: str) -> tuple:
+    return parse_int(request_id), parse_int(response_id)
+
+
+@app.command("vin")
+def vin(timeout: float = 2.0) -> None:
+    """Read the VIN via OBD-II Mode 09 PID 02 (multi-frame ISO-TP)."""
+    settings = get_settings()
+    try:
+        result = uds.read_vin_obd(settings, TransmitGuard(settings), timeout)
+    except TransmitBlocked as e:
+        console.print(f"[red]Blocked by the transmit policy: {e}[/red]")
+        raise typer.Exit(code=2)
+    except Exception as e:
+        typer.echo(json.dumps({"status": "error", "message": uds.uds_error(e)}))
+        raise typer.Exit(code=1)
+    typer.echo(json.dumps({"status": "success", **result}, indent=2))
+
+
+def _run_uds(
+    purpose: str,
+    write: bool,
+    request_id: str,
+    response_id: str,
+    timeout: float,
+    action: Callable[[Any], Any],
+) -> Any:
+    settings = get_settings()
+    req, resp = _uds_options_ids(request_id, response_id)
+    try:
+        guard = TransmitGuard(settings)
+        with uds.uds_client(settings, guard, purpose, write, req, resp, timeout) as client:
+            return action(client)
+    except TransmitBlocked as e:
+        console.print(f"[red]Blocked by the transmit policy: {e}[/red]")
+        raise typer.Exit(code=2)
+    except Exception as e:
+        typer.echo(json.dumps({"status": "error", "message": uds.uds_error(e)}))
+        raise typer.Exit(code=1)
+
+
+@app.command("uds-read")
+def uds_read(
+    dids: List[str] = typer.Argument(..., help="Data identifiers, e.g. 0xF190 0xF40C"),
+    request_id: str = typer.Option("0x7E0", help="ECU request (physical) ID"),
+    response_id: str = typer.Option("0x7E8", help="ECU response ID"),
+    timeout: float = 2.0,
+) -> None:
+    """UDS ReadDataByIdentifier (0x22) over ISO-TP."""
+    values = _run_uds(
+        "uds-read", False, request_id, response_id, timeout,
+        lambda c: uds.read_dids(c, [parse_int(d) for d in dids]),
+    )
+    typer.echo(json.dumps({"status": "success", "values": values}, indent=2))
+
+
+@app.command("uds-dtcs")
+def uds_dtcs(
+    status_mask: str = typer.Option("0xFF", help="DTC status mask"),
+    request_id: str = typer.Option("0x7E0", help="ECU request (physical) ID"),
+    response_id: str = typer.Option("0x7E8", help="ECU response ID"),
+    timeout: float = 2.0,
+) -> None:
+    """UDS ReadDTCInformation (0x19 0x02): stored DTCs with status bits."""
+    dtcs = _run_uds(
+        "uds-dtcs", False, request_id, response_id, timeout,
+        lambda c: uds.read_dtcs(c, parse_int(status_mask)),
+    )
+    typer.echo(json.dumps({"status": "success", "dtcs": dtcs}, indent=2))
+
+
+@app.command("uds-clear")
+def uds_clear(
+    request_id: str = typer.Option("0x7E0", help="ECU request (physical) ID"),
+    response_id: str = typer.Option("0x7E8", help="ECU response ID"),
+    timeout: float = 2.0,
+) -> None:
+    """UDS ClearDiagnosticInformation (0x14). Changes ECU state."""
+    _run_uds("uds-clear", True, request_id, response_id, timeout, lambda c: c.clear_dtc(0xFFFFFF))
+    typer.echo(json.dumps({"status": "success"}))
+
+
+@app.command("log-info")
+def log_info(
+    file: str = typer.Argument(..., help="Log file (.asc .blf .trc .log .csv), or 'sample'"),
+    json_out: bool = typer.Option(False, "--json", help="Print the full analysis as JSON"),
+) -> None:
+    """Summarise a recorded CAN log: IDs and rates, signal ranges, DTCs, gaps."""
+    settings = get_settings()
+    analysis = logs.analyze_log(logs.load_log(_log_path(file)), load_dbc(settings.dbc_path))
+    if json_out:
+        typer.echo(json.dumps(analysis, indent=2, default=str))
+        return
+    console.print(
+        f"[bold]{analysis['file']}[/bold]: {analysis['frame_count']} frames over "
+        f"{analysis['duration_s']} s, {analysis['distinct_ids']} IDs, "
+        f"{analysis['error_frames']} error frames"
+    )
+    ids = Table(title="Arbitration IDs")
+    for col in ("ID", "Name", "Count", "Rate (Hz)"):
+        ids.add_column(col)
+    for entry in analysis["ids"][:25]:
+        ids.add_row(
+            entry["arbitration_id"],
+            entry["name"] or "-",
+            str(entry["count"]),
+            str(entry.get("rate_hz", "-")),
+        )
+    console.print(ids)
+    sigs = Table(title="Signals")
+    for col in ("Signal", "Message", "Min", "Max", "Mean", "Last", "Unit"):
+        sigs.add_column(col)
+    for sig in analysis["signals"]:
+        if "min" in sig:
+            stats = [str(sig[k]) for k in ("min", "max", "mean", "last")]
+            sigs.add_row(sig["name"], sig["message"] or "-", *stats, sig["unit"])
+        else:
+            values = ", ".join(sig["values"])
+            sigs.add_row(sig["name"], sig["message"] or "-", "", "", "", values, "")
+    console.print(sigs)
+    for code in analysis["obd_dtcs"]:
+        console.print(
+            f"[yellow]OBD DTC {code['code']} first seen at {code['first_seen_s']} s[/yellow]"
+        )
+    for dtc in analysis["j1939_dtcs"]:
+        console.print(
+            f"[yellow]J1939 DTC SPN {dtc['spn']} FMI {dtc['fmi']} ({dtc['fmi_name']}) "
+            f"{dtc['first_seen_s']}-{dtc['last_seen_s']} s[/yellow]"
+        )
+    for gap in analysis["timing_gaps"]:
+        console.print(f"[red]Gap: {gap}[/red]")
+
+
+@app.command("log-signal")
+def log_signal(
+    file: str = typer.Argument(..., help="Log file, or 'sample'"),
+    signal: str = typer.Argument(..., help="Signal name, e.g. ENGINE_SPEED"),
+    max_points: int = typer.Option(50, help="Downsample to at most this many points"),
+    message: Optional[str] = typer.Option(
+        None, help="Source message when the name occurs in several (e.g. J1939:EEC1)"
+    ),
+) -> None:
+    """Print one signal's values over a recorded log as JSON."""
+    settings = get_settings()
+    log = logs.load_log(_log_path(file))
+    series = logs.signal_series(log, load_dbc(settings.dbc_path), signal, max_points, message)
+    typer.echo(json.dumps(series, indent=2, default=str))
+
+
+@app.command("replay")
+def replay(
+    file: str = typer.Argument(..., help="Log file, or 'sample'"),
+    speed: float = typer.Option(1.0, help="Playback speed factor"),
+    loop: bool = typer.Option(False, help="Repeat until Ctrl-C"),
+) -> None:
+    """Replay a recorded log onto the configured bus (subject to the transmit
+    policy: allowed on the virtual bus, needs PEYKAN_ALLOW_TRANSMIT and
+    PEYKAN_ALLOW_WRITE_SERVICES on real hardware)."""
+    log = logs.load_log(_log_path(file))
+    with _transmit_bus("replay", write=True) as bus:
+        player = logs.LogReplayer(log, bus, speed=speed, loop=loop)
+        player.start()
+        try:
+            while player.is_alive():
+                player.join(timeout=0.5)
+        except KeyboardInterrupt:
+            player.stop()
+        status = player.status()
+        if status["error"]:
+            console.print(f"[red]Replay stopped: {status['error']}[/red]")
+            raise typer.Exit(code=2)
+        console.print(f"[green]Replayed {status['frames_sent']} frames[/green]")
+
+
+@app.command("record")
+def record(
+    file: str = typer.Argument(..., help="Output log (.asc .blf .log .csv .trc)"),
+    seconds: float = typer.Option(30.0, help="How long to record"),
+    simulate: bool = typer.Option(False, help="Run the simulator in this process and record it"),
+    fault: Optional[str] = typer.Option(None, help="With --simulate: fault preset to inject"),
+    fault_at: float = typer.Option(10.0, help="Seconds into the recording to inject --fault"),
+) -> None:
+    """Record bus traffic to a log file (e.g. a simulated drive with a fault)."""
+    settings = get_settings()
+    if fault is not None and (not simulate or fault not in PRESETS):
+        console.print("[red]--fault needs --simulate and a known preset (peykan fault list)[/red]")
+        raise typer.Exit(code=1)
+    if simulate:
+        threading.Thread(target=run_simulator, daemon=True).start()
+        _time.sleep(1.0)  # let the simulator come up before recording starts
+    if fault is not None:
+        def _inject() -> None:
+            _time.sleep(fault_at)
+            with _transmit_bus("record --fault", write=True) as bus:
+                arb_id, data = build_control_frame(fault)
+                bus.send(can.Message(arbitration_id=arb_id, data=data, is_extended_id=False))
+        threading.Thread(target=_inject, daemon=True).start()
+    bus = make_bus(settings.can_interface, settings.can_channel)
+    try:
+        count = logs.record_bus(bus, file, seconds)
+    finally:
+        shutdown_bus(bus)
+    console.print(f"[green]Wrote {count} frames to {file}[/green]")
+
+
 @app.command("demo")
 def demo(
-    port: Optional[int] = typer.Option(
+    host: Optional[str] = typer.Option(
         None,
-        help="Run simulator + server in one process (shared virtual bus)",
+        help="Interface to listen on (default 127.0.0.1; 0.0.0.0 exposes it to the network)",
     ),
+    port: Optional[int] = typer.Option(None, help="MCP server port (default from env)"),
     transport: Optional[str] = typer.Option(
         None, help="MCP transport: sse | streamable-http | stdio (default from env)"
+    ),
+    log: Optional[str] = typer.Option(
+        None, help="Replay this log file (or 'sample') on a loop instead of simulating"
     ),
 ) -> None:
     """Run simulator in a background thread and start the MCP server.
 
-    Helps on Windows with virtual backend.
+    Helps on Windows with virtual backend. With --log, the server sees a
+    recorded drive (replayed in a loop) instead of the simulator.
     """
-    sim_thread = threading.Thread(target=run_simulator, daemon=True)
-    sim_thread.start()
+    if log is not None:
+        settings = get_settings()
+        loaded = logs.load_log(_log_path(log))
+        raw = make_bus(settings.can_interface, settings.can_channel)
+        bus = TransmitGuard(settings).wrap(raw, "demo --log", write=True)
+        logs.LogReplayer(loaded, bus, loop=True).start()
+    else:
+        sim_thread = threading.Thread(target=run_simulator, daemon=True)
+        sim_thread.start()
+    if host is not None:
+        os.environ["PEYKAN_MCP_HOST"] = host
     if port is not None:
-        os.environ["MCP_CAN_MCP_PORT"] = str(port)
+        os.environ["PEYKAN_MCP_PORT"] = str(port)
     if transport is not None:
-        os.environ["MCP_CAN_MCP_TRANSPORT"] = transport
+        os.environ["PEYKAN_MCP_TRANSPORT"] = transport
     run_server()

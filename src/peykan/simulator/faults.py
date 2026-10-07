@@ -10,11 +10,14 @@ in the simulator process) applies it to a shared `FaultState`, and acks on
 `OBDResponderThread` consults `FaultState.dtcs()` for Mode 03 responses.
 """
 import logging
+import random
 import threading
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import can
+
+from .state import ENGINE_TEMP_MAX_C, DrivingState
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,36 @@ class FaultPreset:
     # of whatever SimThread would otherwise compute for that signal.
     overrides: Dict[str, Any]
     dtcs: List[str] = field(default_factory=list)
+    # Applied to (a copy of) the driving state before any protocol derives
+    # values from it, so e.g. a crash stops the vehicle on the 11-bit
+    # signals, J1939 and OBD-II alike -- `overrides` only reach DBC signals.
+    state_effect: Optional[Callable[[DrivingState], None]] = None
+
+
+def _overheat(state: DrivingState) -> None:
+    state.engine_temp_c = ENGINE_TEMP_MAX_C
+
+
+def _low_fuel(state: DrivingState) -> None:
+    state.fuel_pct = 2.0
+
+
+def _crash(state: DrivingState) -> None:
+    # Engine stalled, vehicle stopped, doors unlocked by the crash sensor.
+    state.speed_kph = 0.0
+    state.rpm = 0.0
+    state.throttle_pct = 0.0
+    state.locked = False
+
+
+def _misfire(state: DrivingState) -> None:
+    # Rough running: RPM jumps around instead of tracking the throttle.
+    state.rpm = max(0.0, state.rpm + random.uniform(-250.0, 250.0))
+
+
+def _battery_low(state: DrivingState) -> None:
+    # Charging system failed: running on a discharging battery.
+    state.battery_v = 11.3 + random.uniform(-0.1, 0.1)
 
 
 PRESETS: Dict[str, FaultPreset] = {
@@ -41,6 +74,7 @@ PRESETS: Dict[str, FaultPreset] = {
         # simulator/state.py::ENGINE_TEMP_MAX_C.
         overrides={"ENGINE_TEMP": 87.5, "SYSTEM_STATUS": 1},  # 1 = FAULT_PRESENT
         dtcs=["P0217"],  # Engine Overtemp Condition
+        state_effect=_overheat,
     ),
     "abs_fault": FaultPreset(
         name="abs_fault",
@@ -58,6 +92,43 @@ PRESETS: Dict[str, FaultPreset] = {
         name="low_fuel",
         description="Fuel level critically low.",
         overrides={"FUEL_LEVEL": 2.0},
+        state_effect=_low_fuel,
+    ),
+    # Presets below were added after the three above; the control-frame wire
+    # format is the preset's position in this dict, so only ever append.
+    "crash": FaultPreset(
+        name="crash",
+        description="Collision: airbags deployed, engine stalled and vehicle "
+        "stopped, doors unlocked and driver door opened, hazard lights on.",
+        overrides={
+            "CRASH_DETECTED": 1,
+            "SYSTEM_STATUS": 1,  # FAULT_PRESENT
+            "DOOR_OPEN_FL": 1,
+            "HEADLIGHTS_ON": 1,
+        },
+        dtcs=["B0001"],  # Driver Frontal Stage 1 Deployment Control
+        state_effect=_crash,
+    ),
+    "door_ajar": FaultPreset(
+        name="door_ajar",
+        description="Rear-right door reported open while the vehicle is moving.",
+        overrides={"DOOR_OPEN_RR": 1},
+    ),
+    "misfire": FaultPreset(
+        name="misfire",
+        description="Random/multiple cylinder misfire: engine speed rough and "
+        "erratic, check-engine lamp on.",
+        overrides={},
+        dtcs=["P0300"],  # Random/Multiple Cylinder Misfire Detected
+        state_effect=_misfire,
+    ),
+    "battery_low": FaultPreset(
+        name="battery_low",
+        description="Charging system failure: system voltage about 11.3 V "
+        "with the engine running (normal is about 14 V).",
+        overrides={},
+        dtcs=["P0562"],  # System Voltage Low
+        state_effect=_battery_low,
     ),
 }
 
@@ -107,6 +178,16 @@ class FaultState:
     def dtcs(self) -> List[str]:
         preset = self._active_preset()
         return list(preset.dtcs) if preset else []
+
+    def apply(self, state: DrivingState) -> DrivingState:
+        """`state` with the active preset's state effect applied (a copy;
+        the shared VehicleState itself is never modified)."""
+        preset = self._active_preset()
+        if preset is None or preset.state_effect is None:
+            return state
+        affected = replace(state)
+        preset.state_effect(affected)
+        return affected
 
 
 class FaultListenerThread(threading.Thread):

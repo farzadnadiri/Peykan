@@ -15,7 +15,7 @@ implemented; see `PGN_CATALOG`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from cantools import j1939 as _ct_j1939
 
@@ -28,8 +28,11 @@ PGN_ET1 = 0xFEEE  # 65262 Engine Temperature 1
 PGN_CCVS1 = 0xFEF1  # 65265 Cruise Control / Vehicle Speed 1
 PGN_LFE1 = 0xFEF2  # 65266 Fuel Economy (Liquid)
 PGN_DD1 = 0xFEFC  # 65276 Dash Display 1
+PGN_VEP1 = 0xFEF7  # 65271 Vehicle Electrical Power 1
 PGN_DM1 = 0xFECA  # 65226 Active Diagnostic Trouble Codes
 PGN_REQUEST = 0xEA00  # 59904 Request PGN
+PGN_TP_CM = 0xEC00  # 60416 Transport Protocol - Connection Management
+PGN_TP_DT = 0xEB00  # 60160 Transport Protocol - Data Transfer
 
 # --- Standard-ish source addresses (SAE J1939-71 Appendix B) ---------------
 SA_ENGINE = 0x00
@@ -122,6 +125,15 @@ PGN_CATALOG: Dict[int, PgnDef] = {
         8,
         [
             SpnDef(96, "FUEL_LEVEL_1", 8, 8, 0.4, 0.0, "%"),
+        ],
+    ),
+    PGN_VEP1: PgnDef(
+        PGN_VEP1,
+        "VEP1",
+        "Vehicle Electrical Power 1",
+        8,
+        [
+            SpnDef(168, "BATTERY_POTENTIAL_POWER_INPUT_1", 32, 16, 0.05, 0.0, "V"),
         ],
     ),
     PGN_DM1: PgnDef(PGN_DM1, "DM1", "Active Diagnostic Trouble Codes", 8, []),
@@ -449,3 +461,145 @@ def describe_pgn(pgn: int) -> Dict[str, Any]:
             for s in definition.spns
         ],
     }
+
+
+# --- Transport protocol (J1939-21 BAM) --------------------------------------
+# A PGN whose payload exceeds 8 bytes -- e.g. a DM1 carrying two or more
+# DTCs -- is broadcast as a TP.CM "BAM" announcement followed by numbered
+# 7-byte TP.DT packets. Only BAM (broadcast) is implemented; RTS/CTS is the
+# peer-to-peer variant and nothing here needs it.
+TP_CM_BAM = 0x20
+BAM_PACKET_GAP_S = 0.05  # J1939-21: 50-200 ms between BAM data packets
+
+
+def build_bam(
+    pgn: int, payload: bytes, source_address: int, priority: int = 7
+) -> List[Tuple[int, bytes]]:
+    """(can_id, data) frames broadcasting `payload` as PGN `pgn` via BAM."""
+    size = len(payload)
+    packets = (size + 6) // 7
+    announce = bytes(
+        [
+            TP_CM_BAM,
+            size & 0xFF,
+            (size >> 8) & 0xFF,
+            packets,
+            0xFF,
+            pgn & 0xFF,
+            (pgn >> 8) & 0xFF,
+            (pgn >> 16) & 0xFF,
+        ]
+    )
+    frames = [(build_can_id(PGN_TP_CM, source_address, priority=priority), announce)]
+    dt_id = build_can_id(PGN_TP_DT, source_address, priority=priority)
+    for seq in range(1, packets + 1):
+        chunk = payload[(seq - 1) * 7 : seq * 7]
+        padding = bytes([0xFF] * (7 - len(chunk)))
+        frames.append((dt_id, bytes([seq]) + chunk + padding))
+    return frames
+
+
+def frames_for_pgn(
+    pgn: int, payload: bytes, source_address: int, priority: int = 6
+) -> List[Tuple[int, bytes]]:
+    """A single frame when the payload fits in 8 bytes, otherwise BAM."""
+    if len(payload) <= 8:
+        return [(build_can_id(pgn, source_address, priority=priority), payload)]
+    return build_bam(pgn, payload, source_address)
+
+
+class TransportReassembler:
+    """Rebuilds BAM multi-packet messages from a stream of frames.
+
+    Feed every 29-bit frame in order; `feed` returns (pgn, source_address,
+    payload) when a message completes. One session per source address, as
+    J1939-21 allows only one BAM in flight per sender; an out-of-sequence
+    packet abandons the session.
+    """
+
+    def __init__(self) -> None:
+        self._sessions: Dict[int, Dict[str, Any]] = {}
+
+    def feed(self, can_id: int, data: bytes) -> Optional[Tuple[int, int, bytes]]:
+        try:
+            parsed = parse_can_id(can_id)
+        except Exception:
+            return None
+        sa = parsed.source_address
+        if parsed.pgn == PGN_TP_CM and len(data) >= 8 and data[0] == TP_CM_BAM:
+            self._sessions[sa] = {
+                "pgn": data[5] | (data[6] << 8) | (data[7] << 16),
+                "size": data[1] | (data[2] << 8),
+                "packets": data[3],
+                "next": 1,
+                "buffer": bytearray(),
+            }
+            return None
+        if parsed.pgn == PGN_TP_DT and data:
+            session = self._sessions.get(sa)
+            if session is None:
+                return None
+            if data[0] != session["next"]:
+                del self._sessions[sa]
+                return None
+            session["buffer"] += bytes(data[1:8])
+            session["next"] += 1
+            if data[0] == session["packets"]:
+                del self._sessions[sa]
+                return (session["pgn"], sa, bytes(session["buffer"][: session["size"]]))
+        return None
+
+
+def latest_dm1_by_source(frames: Iterable[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """The most recent DM1 from each source address among `frames` (dicts
+    with arbitration_id, data, timestamp), whether sent as a single frame or
+    via BAM. Every ECU broadcasts its own DM1 (engine, transmission,
+    brakes, ...), so the latest one overall would hide the others' faults."""
+    reassembler = TransportReassembler()
+    latest: Dict[int, Dict[str, Any]] = {}
+    for frame in frames:
+        data = bytes(frame["data"])
+        try:
+            parsed = parse_can_id(frame["arbitration_id"])
+        except Exception:
+            continue
+        if parsed.pgn == PGN_DM1:
+            sa, payload = parsed.source_address, data
+        else:
+            completed = reassembler.feed(frame["arbitration_id"], data)
+            if completed is None or completed[0] != PGN_DM1:
+                continue
+            _pgn, sa, payload = completed
+        lamps, dtcs = parse_dm1(payload)
+        latest[sa] = {
+            "source_address": sa,
+            "lamps": lamps,
+            "dtcs": dtcs,
+            "timestamp": frame.get("timestamp"),
+        }
+    return latest
+
+
+def latest_dm1(frames: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The single most recent DM1 from any source (see latest_dm1_by_source)."""
+    by_source = latest_dm1_by_source(frames)
+    if not by_source:
+        return None
+    return list(by_source.values())[-1]
+
+
+# Severity order for merging lamp states across ECUs (see _LAMP_STATES).
+_LAMP_RANK = {"not_available": 0, "off": 1, "on": 2}
+
+
+def merge_dm1s(by_source: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
+    """Combine per-ECU DM1s: every active DTC tagged with its source
+    address, and each lamp at its most severe state across ECUs."""
+    lamps: Dict[str, str] = {}
+    dtcs: List[Tuple[int, J1939Dtc]] = []
+    for sa, dm1 in sorted(by_source.items()):
+        for name, state in dm1["lamps"].items():
+            if name not in lamps or _LAMP_RANK.get(state, 0) > _LAMP_RANK.get(lamps[name], 0):
+                lamps[name] = state
+        dtcs.extend((sa, dtc) for dtc in dm1["dtcs"])
+    return {"lamps": lamps, "dtcs": dtcs}

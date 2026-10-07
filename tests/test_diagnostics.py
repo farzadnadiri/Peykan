@@ -1,4 +1,4 @@
-from mcp_can.diagnostics import (
+from peykan.diagnostics import (
     SERVICE_IDS,
     ecu_name_from_response_message,
     handle_service,

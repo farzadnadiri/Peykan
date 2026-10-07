@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mcp-can"
+name = "peykan"
 dynamic = ["version"]
-description = "MCP server exposing vehicle CAN bus, OBD-II and SAE J1939 diagnostics to LLMs, with a built-in virtual CAN simulator (no hardware required)."
+description = "Peykan: MCP server exposing vehicle CAN bus, OBD-II and SAE J1939 diagnostics to LLMs, with a built-in virtual CAN simulator (no hardware required)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -14,6 +14,8 @@ authors = [
   { name = "farzad", email = "farzadnadiri7@gmail.com" }
 ]
 keywords = [
+  "peykan",
+  "mcp-can",
   "mcp",
   "model-context-protocol",
   "can-bus",
@@ -22,6 +24,11 @@ keywords = [
   "obd2",
   "j1939",
   "uds",
+  "iso-tp",
+  "isotp",
+  "can-log",
+  "blf",
+  "asc",
   "automotive",
   "vehicle-diagnostics",
   "ecu",
@@ -52,9 +59,10 @@ classifiers = [
 
 dependencies = [
   "python-can>=4.0",
+  "can-isotp>=2.0",
+  "udsoncan>=1.26",
   "cantools>=40.0",
-  "mcp>=1.7.0,<2.0.0",
-  "httpx-sse>=0.4.0",
+  "mcp>=2.1.1,<3",
   "typer>=0.9.0",
   "pydantic>=2.0",
   "pydantic-settings>=2.0",
@@ -63,23 +71,27 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# slcan (serial/USB CAN adapters such as CANable) needs pyserial.
+serial = ["pyserial>=3.0"]
 dev = ["pytest", "ruff", "mypy", "build", "twine"]
 
 [project.urls]
-Homepage = "https://github.com/farzadnadiri/MCP-CAN"
-Repository = "https://github.com/farzadnadiri/MCP-CAN"
-Issues = "https://github.com/farzadnadiri/MCP-CAN/issues"
-Changelog = "https://github.com/farzadnadiri/MCP-CAN/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/farzadnadiri/peykan"
+Repository = "https://github.com/farzadnadiri/peykan"
+Issues = "https://github.com/farzadnadiri/peykan/issues"
+Changelog = "https://github.com/farzadnadiri/peykan/blob/main/CHANGELOG.md"
 
 [project.scripts]
-mcp-can = "mcp_can.cli:app"
+peykan = "peykan.cli:app"
+# Deprecated alias from when the project was called mcp-can.
+mcp-can = "peykan.cli:legacy_main"
 
 [tool.setuptools.dynamic]
-version = { attr = "mcp_can.__version__" }
+version = { attr = "peykan.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"mcp_can" = ["py.typed", "data/*.dbc"]
-"mcp_can.server" = ["templates/*.html"]
+"peykan" = ["py.typed", "data/*.dbc", "data/*.asc"]
+"peykan.server" = ["templates/*.html"]

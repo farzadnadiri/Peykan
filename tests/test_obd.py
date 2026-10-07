@@ -1,4 +1,4 @@
-from mcp_can.obd import (
+from peykan.obd import (
     decode_dtc,
     decode_dtcs,
     decode_pid_value,
@@ -87,3 +87,33 @@ def test_decode_response_dispatches_mode03_to_dtcs():
 
 def test_decode_response_dispatches_other_modes_to_decode_pid_value():
     assert decode_response(0x41, 0x0D, [50]) == decode_pid_value(0x0D, [50])
+
+
+def test_only_real_answers_count_as_obd_responses():
+    import can
+
+    from peykan.obd import build_response_frame, is_response_to, wait_for_response
+
+    _, answer = build_response_frame([0x41, 0x0D, 60])
+    _, refused = build_response_frame([0x7F, 0x01, 0x12])
+    noise = [
+        can.Message(arbitration_id=0x0CF00400, data=bytes(8), is_extended_id=True),  # J1939 EEC1
+        can.Message(arbitration_id=0x100, data=bytes(8), is_extended_id=False),  # ENGINE_STATUS
+        # An answer to a different service (Mode 09) from the right ECU:
+        can.Message(arbitration_id=0x7E8, data=bytes([0x03, 0x49, 0x02, 1, 0, 0, 0, 0])),
+    ]
+    good = can.Message(arbitration_id=0x7E8, data=answer, is_extended_id=False)
+    assert [is_response_to(m, 0x01) for m in noise] == [False, False, False]
+    assert is_response_to(good, 0x01)
+    negative = can.Message(arbitration_id=0x7E9, data=refused, is_extended_id=False)
+    assert is_response_to(negative, 0x01)
+
+    class _Bus:
+        def __init__(self, msgs):
+            self.msgs = list(msgs)
+
+        def recv(self, timeout=None):
+            return self.msgs.pop(0) if self.msgs else None
+
+    assert wait_for_response(_Bus(noise + [good]), 0x01, 1.0) is good
+    assert wait_for_response(_Bus(noise), 0x01, 0.3) is None

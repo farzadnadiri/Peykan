@@ -38,6 +38,8 @@ ENGINE_TEMP_MAX_C = 87.5
 CABIN_SETPOINT_C = 21.5  # climate control target
 AUTO_LOCK_KPH = 15.0  # doors lock once the vehicle passes this speed
 HEADLIGHT_LUX = 80.0  # automatic headlights below this ambient light
+CHARGING_VOLTAGE = 14.2  # alternator output with the engine running
+RESTING_VOLTAGE = 12.6  # healthy battery, engine off
 
 # WIPER_STATUS choice values (vehicle.dbc VAL_ table).
 WIPER_OFF = 0
@@ -53,6 +55,7 @@ class DrivingState:
     speed_kph: float = 0.0
     engine_temp_c: float = AMBIENT_TEMP_C
     fuel_pct: float = 80.0
+    battery_v: float = RESTING_VOLTAGE
     # Cabin / environment situation: changes slowly or not at all.
     ambient_light_lux: float = 180.0
     raining: bool = False
@@ -91,6 +94,9 @@ def tick(state: DrivingState, dt_s: float) -> DrivingState:
         state.engine_temp_c, OPERATING_TEMP_C, time_constant_s=60.0, dt_s=dt_s
     ) + random.uniform(-0.3, 0.3)
     fuel = state.fuel_pct - (0.002 + throttle * 0.0002) * dt_s
+    target_v = CHARGING_VOLTAGE if rpm > IDLE_RPM / 2 else RESTING_VOLTAGE
+    battery = _approach(state.battery_v, target_v, time_constant_s=5.0, dt_s=dt_s)
+    battery += random.uniform(-0.03, 0.03)
 
     light = state.ambient_light_lux + random.uniform(-4, 4) * dt_s
     if random.random() < 0.01 * dt_s:  # tunnel, overpass, clouds clearing...
@@ -100,7 +106,7 @@ def tick(state: DrivingState, dt_s: float) -> DrivingState:
         raining = not raining
     interior = _approach(
         state.interior_temp_c, CABIN_SETPOINT_C, time_constant_s=120.0, dt_s=dt_s
-    ) + random.uniform(-0.05, 0.05)
+    ) + random.uniform(-0.02, 0.02)
 
     return DrivingState(
         throttle_pct=throttle,
@@ -108,6 +114,7 @@ def tick(state: DrivingState, dt_s: float) -> DrivingState:
         speed_kph=_clamp(speed, 0.0, 300.0),
         engine_temp_c=_clamp(engine_temp, -40.0, ENGINE_TEMP_MAX_C),
         fuel_pct=_clamp(fuel, 0.0, 100.0),
+        battery_v=_clamp(battery, 0.0, 25.5),
         ambient_light_lux=_clamp(light, 5.0, 255.0),
         raining=raining,
         interior_temp_c=_clamp(interior, -40.0, 87.5),
@@ -134,6 +141,7 @@ CORRELATED_SIGNALS: Dict[str, CorrelatedFn] = {
         _clamp(s.throttle_pct * 0.9 + random.uniform(-3, 3), 0.0, 100.0), 1
     ),
     "FUEL_LEVEL": lambda s: round(s.fuel_pct, 1),
+    "BATTERY_VOLTAGE": lambda s: round(s.battery_v, 1),
     "WHEEL_SPEED_FL": lambda s: round(
         _clamp(s.speed_kph + random.uniform(-1.0, 1.0), 0.0, 300.0), 2
     ),

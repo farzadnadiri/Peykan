@@ -37,7 +37,7 @@ jobs:
 
   # Build the sdist/wheel and exercise the *installed* package from outside the
   # checkout, so anything missing from the wheel (package data, entry points)
-  # fails here rather than for someone running `pip install mcp-can`.
+  # fails here rather than for someone running `pip install peykan`.
   package:
     runs-on: ubuntu-latest
     steps:
@@ -55,7 +55,7 @@ jobs:
           python -m venv /tmp/venv
           /tmp/venv/bin/pip install dist/*.whl
           cd /tmp
-          /tmp/venv/bin/mcp-can --help
-          /tmp/venv/bin/mcp-can dbc-info
-          /tmp/venv/bin/mcp-can j1939-pgns
-          /tmp/venv/bin/python -c "import mcp_can; print(mcp_can.__version__)"
+          /tmp/venv/bin/peykan --help
+          /tmp/venv/bin/peykan dbc-info
+          /tmp/venv/bin/peykan j1939-pgns
+          /tmp/venv/bin/python -c "import peykan; print(peykan.__version__)"
