@@ -1,3 +1,8 @@
+# Pinned runtime dependencies for CI and the Docker image.
+# Every pin must install on Python 3.10 (the minimum supported version, and
+# what Ubuntu 22.04 in the Dockerfile ships): regenerate with Python 3.10, or
+# check each pin's Requires-Python. rpds-py is held at 0.30.0 because later
+# releases require Python 3.11+.
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
@@ -35,7 +40,7 @@ python-multipart==0.0.32
 pywin32==312; sys_platform == "win32"
 referencing==0.37.0
 rich==15.0.0
-rpds-py==2026.9.1
+rpds-py==0.30.0
 shellingham==1.5.4
 sse-starlette==3.5.0
 starlette==1.7.0

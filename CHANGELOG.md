@@ -5,6 +5,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `requirements.txt` pinned `rpds-py==2026.9.1`, which needs Python 3.11+,
+  so CI on Python 3.10 (and the Ubuntu 22.04 Docker image) couldn't
+  install it. Pinned to 0.30.0, the newest release supporting 3.10, with
+  wheels for 3.10-3.14. The published `peykan` 0.2.0 package was
+  unaffected: it doesn't pin rpds-py.
+
+### Changed
+- CI/release workflows use `actions/checkout@v7` and `actions/setup-python@v7`
+  (Node.js 24; v4/v5 ran on the deprecated Node.js 20).
+
 ## [0.2.0] - 2026-10-07
 
 ### Changed
