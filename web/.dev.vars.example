@@ -1,0 +1,8 @@
+# Local development values. Copy to .dev.vars (gitignored).
+# Cloudflare's always-pass Turnstile TEST secret; production uses `wrangler secret put`.
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+# Any long random string; production: wrangler secret put SESSION_SECRET
+SESSION_SECRET=dev-only-change-me
+# Local Peykan to use instead of containers (local dev on Windows can't run them).
+# Start it first: peykan demo --transport streamable-http --port 6401
+VEHICLE_DEV_URL=http://127.0.0.1:6401

@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import can
 
-from .state import ENGINE_TEMP_MAX_C, DrivingState
+from .state import ENGINE_TEMP_MAX_C, RESTING_VOLTAGE, DrivingState
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,8 @@ def _crash(state: DrivingState) -> None:
     state.rpm = 0.0
     state.throttle_pct = 0.0
     state.locked = False
+    # Stalled engine: no alternator, so the battery drops to resting voltage.
+    state.battery_v = min(state.battery_v, RESTING_VOLTAGE)
 
 
 def _misfire(state: DrivingState) -> None:

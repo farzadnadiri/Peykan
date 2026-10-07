@@ -22,3 +22,9 @@ dist/
 build/
 
 
+
+# web/ (Cloudflare Worker): local secrets and build output
+web/.dev.vars
+web/node_modules/
+web/dist/
+web/.wrangler/

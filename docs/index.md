@@ -19,6 +19,8 @@ default. Optional SocketCAN / vCAN on Linux.
 - **Source code and full docs:** [github.com/farzadnadiri/peykan](https://github.com/farzadnadiri/peykan)
 - **License:** MIT (educational and prototyping use)
 
+**Try it in your browser:** [peykan.ai](https://peykan.ai), a private simulated car and an AI agent to talk to it, no install needed.
+
 ## What it does
 
 - Streams and decodes live **CAN frames** from a simulated multi-ECU bus.

@@ -59,3 +59,25 @@ jobs:
           /tmp/venv/bin/peykan dbc-info
           /tmp/venv/bin/peykan j1939-pgns
           /tmp/venv/bin/python -c "import peykan; print(peykan.__version__)"
+
+  # peykan.ai (web/): the Cloudflare Worker, chat agent and UI. Deploys are
+  # manual (`npm run deploy` in web/); CI keeps the code type-safe and buildable.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit -p .
+      - name: Lint
+        run: npx oxlint src/
+      - name: Build
+        run: npx vite build

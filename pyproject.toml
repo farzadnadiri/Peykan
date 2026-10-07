@@ -77,6 +77,7 @@ dev = ["pytest", "ruff", "mypy", "build", "twine"]
 
 [project.urls]
 Homepage = "https://github.com/farzadnadiri/peykan"
+Demo = "https://peykan.ai"
 Repository = "https://github.com/farzadnadiri/peykan"
 Issues = "https://github.com/farzadnadiri/peykan/issues"
 Changelog = "https://github.com/farzadnadiri/peykan/blob/main/CHANGELOG.md"

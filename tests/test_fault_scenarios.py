@@ -7,7 +7,7 @@ from peykan.simulator.state import CHARGING_VOLTAGE, DrivingState, tick
 
 
 def _driving():
-    return DrivingState(throttle_pct=40.0, rpm=2600.0, speed_kph=80.0, locked=True)
+    return DrivingState(throttle_pct=40.0, rpm=2600.0, speed_kph=80.0, locked=True, battery_v=14.2)
 
 
 def test_new_presets_exist_with_descriptions():
@@ -20,6 +20,7 @@ def test_crash_stops_the_vehicle_and_deploys_airbags():
     faults.activate("crash")
     state = faults.apply(_driving())
     assert state.speed_kph == 0 and state.rpm == 0 and not state.locked
+    assert state.battery_v <= 12.6  # engine stalled: no charging
     assert faults.get_override("CRASH_DETECTED") == 1
     assert faults.dtcs() == ["B0001"]
 

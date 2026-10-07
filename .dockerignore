@@ -1,0 +1,19 @@
+# Keep the Peykan image small: peykan.ai builds it on every deploy and starts
+# one per visitor. Only the Python package and its metadata are needed.
+.git
+.github
+web/
+docs/
+tests/
+**/__pycache__
+**/*.pyc
+*.egg-info
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.dev.vars
+.env

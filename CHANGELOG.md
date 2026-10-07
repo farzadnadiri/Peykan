@@ -5,6 +5,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- The `crash` fault stopped the engine but left the battery at charging
+  voltage (~14.2 V); it now drops to resting voltage, since a stalled
+  engine doesn't charge.
+
+### Added
+- `web/`: the peykan.ai site, a Cloudflare Worker where each visitor chats
+  with an AI agent (Workers AI) connected to a private simulated vehicle
+  (this package's Docker image in a Cloudflare Container). See
+  `web/README.md`.
+- `.dockerignore`, so the image doesn't include `web/`, tests or docs.
+
 ## [0.2.1] - 2026-10-07
 
 ### Fixed

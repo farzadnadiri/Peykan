@@ -1,0 +1,60 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "peykan-web",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [{ "pattern": "peykan.ai", "custom_domain": true }],
+  "observability": { "enabled": true },
+  // Containers can't run in local dev on Windows; see VEHICLE_DEV_URL in
+  // .dev.vars.example for developing against a locally started Peykan.
+  "dev": { "enable_containers": false },
+
+  // Workers AI runs the chat model. `remote: true` lets `npm run dev` use
+  // the real model (needs `npx wrangler login`).
+  "ai": { "binding": "AI", "remote": true },
+
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*", "/api/*"]
+  },
+
+  "vars": {
+    // Model for the chat agent; any Workers AI model with tool calling works.
+    "CHAT_MODEL": "@cf/openai/gpt-oss-120b",
+    // Turnstile sitekey (public). This is Cloudflare's always-pass TEST key:
+    // replace it with your widget's sitekey before going public.
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAFQym4a-EAicF2hf",
+    // User messages allowed per visitor session.
+    "MAX_USER_MESSAGES": "40"
+  },
+  // Secrets (never in this file): `npx wrangler secret put <NAME>`
+  //   TURNSTILE_SECRET_KEY  Turnstile widget secret
+  //   SESSION_SECRET        random string used to sign session cookies
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "ChatAgent", "class_name": "ChatAgent" },
+      { "name": "VEHICLE", "class_name": "Vehicle" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChatAgent", "Vehicle"] }],
+
+  // One Peykan container per visitor, built from the repo's own Dockerfile.
+  // `max_instances` caps how many visitors can have a live vehicle at once.
+  "containers": [
+    {
+      "class_name": "Vehicle",
+      "image": "../Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 25
+    }
+  ],
+
+  // Per-IP limit on starting sessions, per-session limit on chat messages.
+  "ratelimits": [
+    { "name": "SESSION_LIMITER", "namespace_id": "8101", "simple": { "limit": 5, "period": 60 } },
+    { "name": "MESSAGE_LIMITER", "namespace_id": "8102", "simple": { "limit": 10, "period": 60 } }
+  ]
+}

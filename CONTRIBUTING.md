@@ -103,6 +103,23 @@ only thing that catches wiring/transport-level regressions.
    the bus, prefer a `FakeBus`-style unit test (see `tests/test_cli.py`)
    over spinning up a real server in the suite.
 
+## The web app (`web/`)
+
+[peykan.ai](https://peykan.ai) lives in `web/`: a Cloudflare Worker (TypeScript) with a chat agent, a per-visitor vehicle container built from this repo's `Dockerfile`, and a React UI. It's independent of the Python package's release cycle; see [`web/README.md`](web/README.md) for the architecture, limits and deployment.
+
+```bash
+cd web
+npm install
+cp .dev.vars.example .dev.vars       # Turnstile test keys + a session secret
+npx wrangler login                   # the chat model runs on Workers AI, even in dev
+peykan demo --transport streamable-http --port 6401   # in another terminal: the car
+npm run dev
+```
+
+Containers can't run in local development on Windows, so dev uses the Peykan you start yourself (`VEHICLE_DEV_URL` in `.dev.vars`); deployed, each visitor gets their own container.
+
+Before a PR touching `web/`, run what CI runs: `npx tsc --noEmit -p .`, `npx oxlint src/` and `npx vite build`. Never commit `.dev.vars` or real secrets: production secrets are set with `npx wrangler secret put`.
+
 ## Releasing to PyPI
 
 `.github/workflows/release.yml` builds and publishes on any `v*.*.*` tag
