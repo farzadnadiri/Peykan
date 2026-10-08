@@ -17,6 +17,7 @@ Use it to let an LLM read live CAN frames, decode signals, run OBD-II PID and UD
 
 **Try it in your browser:** [peykan.ai](https://peykan.ai) gives you a private simulated car and an AI agent to talk to it, no install needed.
 
+<img src="https://github.com/user-attachments/assets/b729e0e8-8924-46ca-b24d-25891b42cded" alt="Peykan Demo" width="100%"/>
 
 
 **Keywords:** MCP server, Model Context Protocol, CAN bus, CANbus, OBD-II, OBD2, on-board diagnostics, SAE J1939, UDS, ECU simulator, vehicle diagnostics, automotive, DBC, python-can, cantools, SocketCAN, LLM tools, AI agents.
