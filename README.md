@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://peykan.ai"><img src="https://img.shields.io/badge/Try_it_live-peykan.ai-ff6b2c?style=for-the-badge" alt="Try it live at peykan.ai"></a>
-  <a href="https://pypi.org/project/peykan/"><img src="https://img.shields.io/pypi/v/peykan?style=for-the-badge&color=0f3b4a" alt="PyPI version"></a>
+  <a href="https://peykan.ai" target="_blank"><img src="https://img.shields.io/badge/Try_it_live-peykan.ai-ff6b2c?style=for-the-badge" alt="Try it live at peykan.ai"></a>
+  <a href="https://pypi.org/project/peykan/" target="_blank"><img src="https://img.shields.io/pypi/v/peykan?style=for-the-badge&color=0f3b4a" alt="PyPI version"></a>
 </p>
 
 # 🚗 Peykan: Vehicle CAN Bus, OBD-II and J1939 Diagnostics for LLMs (Model Context Protocol)
@@ -16,6 +16,8 @@
 Use it to let an LLM read live CAN frames, decode signals, run OBD-II PID and UDS diagnostic requests, inspect J1939 PGNs/SPNs and DM1 trouble codes, and drive fault-injection scenarios against a simulated vehicle, analyse recorded CAN logs, or work with real hardware behind a read-only-by-default safety policy.
 
 **Try it in your browser:** [peykan.ai](https://peykan.ai) gives you a private simulated car and an AI agent to talk to it, no install needed.
+
+
 
 **Keywords:** MCP server, Model Context Protocol, CAN bus, CANbus, OBD-II, OBD2, on-board diagnostics, SAE J1939, UDS, ECU simulator, vehicle diagnostics, automotive, DBC, python-can, cantools, SocketCAN, LLM tools, AI agents.
 
@@ -65,7 +67,7 @@ Use it to let an LLM read live CAN frames, decode signals, run OBD-II PID and UD
 - `src/peykan/data/sample_drive.asc` – bundled 30 s recording of a simulated drive with a misfire at 15 s
 - `simulate-ecus.py`, `peykan-server.py` – standalone run-without-installing entrypoints
 - `docker/compose.yml`, `Dockerfile`
-- `web/` – the [peykan.ai](https://peykan.ai) site: Cloudflare Worker, chat agent and UI (see [`web/README.md`](web/README.md))
+- `web/` – the [peykan.ai](https://peykan.ai) site
 - `tests/` – unit tests
 - `CONTRIBUTING.md`, `CHANGELOG.md`
 
@@ -340,9 +342,6 @@ Then use `http://localhost:6278/sse` and `http://localhost:6278/dashboard` as us
 ```bash
 docker compose up -d --build
 ```
-
-## 🌐 peykan.ai (web demo)
-[peykan.ai](https://peykan.ai) runs Peykan in the browser: each visitor gets a private simulated car (this repo's Docker image in a Cloudflare Container) and a chat agent on Workers AI that reaches the car through the MCP tools, next to a live view of the car with fault buttons. The site's code is in [`web/`](web/); [`web/README.md`](web/README.md) covers local development and deployment.
 
 ## 🧪 Development & Testing
 See `CONTRIBUTING.md` for the full guide. Quick version:
