@@ -7,7 +7,7 @@
   <a href="https://pypi.org/project/peykan/" target="_blank"><img src="https://img.shields.io/pypi/v/peykan?style=for-the-badge&color=0f3b4a" alt="PyPI version"></a>
 </p>
 
-# 🚗 Peykan: Vehicle CAN Bus, OBD-II and J1939 Diagnostics for LLMs (Model Context Protocol)
+# 🚗 Peykan: Talk to Your Car Using AI
 
 🔌 Virtual CAN + MCP Server
 
